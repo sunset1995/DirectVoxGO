@@ -104,6 +104,8 @@ def load_data(args):
         ])
     print('Intrinsics', K)
 
+    render_poses = render_poses[...,:4]
+
     data_dict = dict(
         hwf=hwf, K=K, near=near, far=far,
         i_train=i_train, i_val=i_val, i_test=i_test,

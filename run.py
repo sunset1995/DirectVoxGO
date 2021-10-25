@@ -36,6 +36,7 @@ def config_parser():
     parser.add_argument("--render_only", action='store_true',
                         help='do not optimize, reload weights and render out render_poses path')
     parser.add_argument("--render_test", action='store_true')
+    parser.add_argument("--render_train", action='store_true')
     parser.add_argument("--render_video", action='store_true')
     parser.add_argument("--render_video_factor", type=int, default=0,
                         help='downsampling factor to speed up rendering, set 4 or 8 for fast preview')
@@ -156,11 +157,6 @@ def load_everything(args, cfg):
     # construct data tensor
     data_dict['images'] = torch.FloatTensor(data_dict['images'], device='cpu')
     data_dict['poses'] = torch.Tensor(data_dict['poses'])
-    if args.render_test:
-        data_dict['render_poses'] = data_dict['poses'][data_dict['i_test']]
-    else:
-        data_dict['render_poses'] = torch.Tensor(data_dict['render_poses'][:,:,:4])
-
     return data_dict
 
 
@@ -459,7 +455,7 @@ if __name__=='__main__':
         train(args, cfg, data_dict)
 
     # load model for rendring
-    if args.render_test or args.render_video:
+    if args.render_test or args.render_train or args.render_video:
         if args.ft_path:
             ckpt_path = args.ft_path
         else:
@@ -480,6 +476,19 @@ if __name__=='__main__':
                 'inverse_y': cfg.data.inverse_y,
             },
         }
+
+    # render trainset and eval
+    if args.render_train:
+        testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_train_{ckpt_name}')
+        os.makedirs(testsavedir, exist_ok=True)
+        rgbs, disps = render_viewpoints(
+                render_poses=data_dict['poses'][data_dict['i_train']],
+                gt_imgs=data_dict['images'][data_dict['i_train']],
+                savedir=testsavedir,
+                eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
+                **render_viewpoints_kwargs)
+        imageio.mimwrite(os.path.join(testsavedir, 'video.rgb.mp4'), utils.to8b(rgbs), fps=30, quality=8)
+        imageio.mimwrite(os.path.join(testsavedir, 'video.disp.mp4'), utils.to8b(disps / np.max(disps)), fps=30, quality=8)
 
     # render testset and eval
     if args.render_test:
