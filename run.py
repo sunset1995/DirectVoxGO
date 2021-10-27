@@ -47,7 +47,7 @@ def config_parser():
     # logging/saving options
     parser.add_argument("--i_print",   type=int, default=500,
                         help='frequency of console printout and metric loggin')
-    parser.add_argument("--i_weights", type=int, default=10000,
+    parser.add_argument("--i_weights", type=int, default=100000,
                         help='frequency of weight ckpt saving')
     return parser
 
@@ -291,6 +291,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
     torch.cuda.empty_cache()
     psnr_lst = []
     time0 = time.time()
+    global_step = -1
     for global_step in trange(1+start, 1+cfg_train.N_iters):
 
         # progress scaling checkpoint
@@ -361,7 +362,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
                        f'Eps: {eps_time_str}')
             psnr_lst = []
 
-        if global_step%args.i_weights==0 or global_step==cfg_train.N_iters:
+        if global_step%args.i_weights==0:
             path = os.path.join(cfg.basedir, cfg.expname, f'{stage}_{global_step:06d}.tar')
             torch.save({
                 'global_step': global_step,
@@ -370,8 +371,17 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
             }, path)
-            copyfile(path, last_ckpt_path)
             print(f'scene_rep_reconstruction ({stage}): saved checkpoints at', path)
+
+    if global_step != -1:
+        torch.save({
+            'global_step': global_step,
+            'model_kwargs': model.get_kwargs(),
+            'MaskCache_kwargs': model.get_MaskCache_kwargs(),
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+        }, last_ckpt_path)
+        print(f'scene_rep_reconstruction ({stage}): saved checkpoints at', last_ckpt_path)
 
 
 def train(args, cfg, data_dict):
