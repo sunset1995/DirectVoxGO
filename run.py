@@ -31,6 +31,7 @@ def config_parser():
                         help='specific weights npy file to reload for coarse network')
     parser.add_argument("--export_bbox_and_cams_only", type=str, default='',
                         help='export scene bbox and camera poses for debugging and 3d visualization')
+    parser.add_argument("--export_coarse_only", type=str, default='')
 
     # testing options
     parser.add_argument("--render_only", action='store_true',
@@ -53,22 +54,18 @@ def config_parser():
 
 
 @torch.no_grad()
-def render_viewpoints(model, render_poses, hwf, K, ndc, render_kwargs,
+def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
                       gt_imgs=None, savedir=None, render_factor=0,
                       eval_ssim=False, eval_lpips_alex=False, eval_lpips_vgg=False):
     '''Render images for the given viewpoints; run evaluation if gt given.
     '''
-
-    H, W = hwf[:2]
+    assert len(render_poses) == len(HW) and len(HW) == len(Ks)
 
     if render_factor!=0:
-        H = H // render_factor
-        W = W // render_factor
-        K = np.copy(K)
-        K[:2, :3] //= render_factor
-
-    if torch.is_tensor(gt_imgs):
-        gt_imgs = gt_imgs.cpu().numpy()
+        HW = np.copy(HW)
+        Ks = np.copy(Ks)
+        HW //= render_factor
+        K[:, :2, :3] //= render_factor
 
     rgbs = []
     disps = []
@@ -79,7 +76,11 @@ def render_viewpoints(model, render_poses, hwf, K, ndc, render_kwargs,
 
     for i, c2w in enumerate(tqdm(render_poses)):
 
-        rays_o, rays_d, viewdirs = dvgo.get_rays_of_a_view(H, W, K, c2w, ndc, inverse_y=render_kwargs['inverse_y'])
+        H, W = HW[i]
+        K = Ks[i]
+        rays_o, rays_d, viewdirs = dvgo.get_rays_of_a_view(
+                H, W, K, c2w, ndc, inverse_y=render_kwargs['inverse_y'],
+                flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y)
         keys = ['rgb_marched', 'disp']
         render_result_chunks = [
             {k: v for k, v in model(ro, rd, vd, **render_kwargs).items() if k in keys}
@@ -112,8 +113,8 @@ def render_viewpoints(model, render_poses, hwf, K, ndc, render_kwargs,
             filename = os.path.join(savedir, '{:03d}.png'.format(i))
             imageio.imwrite(filename, rgb8)
 
-    rgbs = np.stack(rgbs, 0)
-    disps = np.stack(disps, 0)
+    rgbs = np.array(rgbs)
+    disps = np.array(disps)
     if len(psnrs):
         '''
         print('Testing psnr', [f'{p:.3f}' for p in psnrs])
@@ -142,32 +143,34 @@ def load_everything(args, cfg):
     '''Load images / poses / camera settings / data split.
     '''
     data_dict = load_data(cfg.data)
-    data_dict['H'] = data_dict['hwf'][0]
-    data_dict['W'] = data_dict['hwf'][1]
 
     # remove useless field
     kept_keys = {
-            'hwf', 'H', 'W', 'K', 'near', 'far',
-            'i_train', 'i_val', 'i_test',
+            'hwf', 'HW', 'Ks', 'near', 'far',
+            'i_train', 'i_val', 'i_test', 'irregular_shape',
             'poses', 'render_poses', 'images'}
     for k in list(data_dict.keys()):
         if k not in kept_keys:
             data_dict.pop(k)
 
     # construct data tensor
-    data_dict['images'] = torch.FloatTensor(data_dict['images'], device='cpu')
+    if data_dict['irregular_shape']:
+        data_dict['images'] = [torch.FloatTensor(im, device='cpu') for im in data_dict['images']]
+    else:
+        data_dict['images'] = torch.FloatTensor(data_dict['images'], device='cpu')
     data_dict['poses'] = torch.Tensor(data_dict['poses'])
     return data_dict
 
 
-def compute_bbox_by_cam_frustrm(args, cfg, H, W, K, poses, i_train, near, far, **kwargs):
+def compute_bbox_by_cam_frustrm(args, cfg, HW, Ks, poses, i_train, near, far, **kwargs):
     print('compute_bbox_by_cam_frustrm: start')
     xyz_min = torch.Tensor([np.inf, np.inf, np.inf])
     xyz_max = -xyz_min
-    for c2w in poses[i_train]:
+    for (H, W), K, c2w in zip(HW[i_train], Ks[i_train], poses[i_train]):
         rays_o, rays_d, viewdirs = dvgo.get_rays_of_a_view(
                 H=H, W=W, K=K, c2w=c2w,
-                ndc=cfg.data.ndc, inverse_y=cfg.data.inverse_y)
+                ndc=cfg.data.ndc, inverse_y=cfg.data.inverse_y,
+                flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y)
         pts_nf = torch.stack([rays_o+viewdirs*near, rays_o+viewdirs*far])
         xyz_min = torch.minimum(xyz_min, pts_nf.amin((0,1,2)))
         xyz_max = torch.maximum(xyz_max, pts_nf.amax((0,1,2)))
@@ -208,9 +211,9 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         xyz_shift = (xyz_max - xyz_min) * (cfg_model.world_bound_scale - 1) / 2
         xyz_min -= xyz_shift
         xyz_max += xyz_shift
-    hwf, H, W, K, near, far, i_train, i_val, i_test, poses, render_poses, images = [
+    HW, Ks, near, far, i_train, i_val, i_test, poses, render_poses, images = [
         data_dict[k] for k in [
-            'hwf', 'H', 'W', 'K', 'near', 'far', 'i_train', 'i_val', 'i_test', 'poses', 'render_poses', 'images'
+            'HW', 'Ks', 'near', 'far', 'i_train', 'i_val', 'i_test', 'poses', 'render_poses', 'images'
         ]
     ]
 
@@ -258,30 +261,50 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         'bg': 1 if cfg.data.white_bkgd else 0,
         'stepsize': cfg_model.stepsize,
         'inverse_y': cfg.data.inverse_y,
+        'flip_x': cfg.data.flip_x,
+        'flip_y': cfg.data.flip_y,
     }
 
     # init batch rays sampler
-    if cfg_train.ray_sampler == 'in_maskcache':
-        rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr = dvgo.get_training_rays_in_maskcache_sampling(
-                rgb_tr_ori=images[i_train].to('cpu' if cfg.data.load2gpu_on_the_fly else device),
+    def gather_training_rays():
+        if data_dict['irregular_shape']:
+            rgb_tr_ori = [images[i].to('cpu' if cfg.data.load2gpu_on_the_fly else device) for i in i_train]
+        else:
+            rgb_tr_ori = images[i_train].to('cpu' if cfg.data.load2gpu_on_the_fly else device)
+
+        if cfg_train.ray_sampler == 'in_maskcache':
+            rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = dvgo.get_training_rays_in_maskcache_sampling(
+                    rgb_tr_ori=rgb_tr_ori,
+                    train_poses=poses[i_train],
+                    HW=HW[i_train], Ks=Ks[i_train],
+                    ndc=cfg.data.ndc, inverse_y=cfg.data.inverse_y,
+                    flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y,
+                    model=model, render_kwargs=render_kwargs)
+        elif cfg_train.ray_sampler == 'flatten':
+            rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = dvgo.get_training_rays_flatten(
+                rgb_tr_ori=rgb_tr_ori,
                 train_poses=poses[i_train],
-                H=H, W=W, K=K, ndc=cfg.data.ndc, inverse_y=cfg.data.inverse_y,
-                model=model, render_kwargs=render_kwargs)
+                HW=HW[i_train], Ks=Ks[i_train], ndc=cfg.data.ndc, inverse_y=cfg.data.inverse_y,
+                flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y)
+        else:
+            rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = dvgo.get_training_rays(
+                rgb_tr=rgb_tr_ori,
+                train_poses=poses[i_train],
+                HW=HW[i_train], Ks=Ks[i_train], ndc=cfg.data.ndc, inverse_y=cfg.data.inverse_y,
+                flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y)
         index_generator = dvgo.batch_indices_generator(len(rgb_tr), cfg_train.N_rand)
         batch_index_sampler = lambda: next(index_generator)
-    else:
-        rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr = dvgo.get_training_rays(
-            rgb_tr=images[i_train].to('cpu' if cfg.data.load2gpu_on_the_fly else device),
-            train_poses=poses[i_train],
-            H=H, W=W, K=K, ndc=cfg.data.ndc, inverse_y=cfg.data.inverse_y)
-        batch_index_sampler = lambda: torch.randint(len(rgb_tr), [cfg_train.N_rand])
+        return rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz, batch_index_sampler
+
+    rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz, batch_index_sampler = gather_training_rays()
 
     # view-count-based learning rate
     if cfg_train.pervoxel_lr:
         def per_voxel_init():
             cnt = model.voxel_count_views(
-                    rays_o_tr=rays_o_tr, rays_d_tr=rays_d_tr, near=near, far=far,
-                    stepsize=cfg_model.stepsize, downrate=cfg_train.pervoxel_lr_downrate)
+                    rays_o_tr=rays_o_tr, rays_d_tr=rays_d_tr, imsz=imsz, near=near, far=far,
+                    stepsize=cfg_model.stepsize, downrate=cfg_train.pervoxel_lr_downrate,
+                    irregular_shape=data_dict['irregular_shape'])
             optimizer.set_pervoxel_lr(cnt)
             with torch.no_grad():
                 model.density[cnt <= 2] = -100
@@ -301,16 +324,16 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             model.density.data.sub_(1)
 
         # random sample rays
-        if cfg_train.ray_sampler == 'in_maskcache':
+        if cfg_train.ray_sampler in ['flatten', 'in_maskcache']:
             sel_i = batch_index_sampler()
             target = rgb_tr[sel_i]
             rays_o = rays_o_tr[sel_i]
             rays_d = rays_d_tr[sel_i]
             viewdirs = viewdirs_tr[sel_i]
         elif cfg_train.ray_sampler == 'random':
-            sel_b = torch.randint(len(rgb_tr), [cfg_train.N_rand])
-            sel_r = torch.randint(H, [cfg_train.N_rand])
-            sel_c = torch.randint(W, [cfg_train.N_rand])
+            sel_b = torch.randint(rgb_tr.shape[0], [cfg_train.N_rand])
+            sel_r = torch.randint(rgb_tr.shape[1], [cfg_train.N_rand])
+            sel_c = torch.randint(rgb_tr.shape[2], [cfg_train.N_rand])
             target = rgb_tr[sel_b, sel_r, sel_c]
             rays_o = rays_o_tr[sel_b, sel_r, sel_c]
             rays_d = rays_d_tr[sel_b, sel_r, sel_c]
@@ -449,15 +472,33 @@ if __name__=='__main__':
 
     # export scene bbox and camera poses in 3d for debugging and visualization
     if args.export_bbox_and_cams_only:
+        print('Export bbox and cameras...')
+        xyz_min, xyz_max = compute_bbox_by_cam_frustrm(args=args, cfg=cfg, **data_dict)
+        poses, HW, Ks, i_train = data_dict['poses'], data_dict['HW'], data_dict['Ks'], data_dict['i_train']
+        near, far = data_dict['near'], data_dict['far']
         cam_lst = []
-        for c2w in poses[i_train]:
-            rays_o, rays_d, viewdirs = dvgo.get_rays_of_a_view(H, W, K, c2w, args.ndc, inverse_y=args.inverse_y)
+        for c2w, (H, W), K in zip(poses[i_train], HW[i_train], Ks[i_train]):
+            rays_o, rays_d, viewdirs = dvgo.get_rays_of_a_view(
+                    H, W, K, c2w, cfg.data.ndc, inverse_y=cfg.data.inverse_y,
+                    flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y,)
             cam_o = rays_o[0,0].cpu().numpy()
             cam_d = rays_d[[0,0,-1,-1],[0,-1,0,-1]].cpu().numpy()
-            cam_lst.append(np.array([cam_o, *(cam_o+cam_d*max(near, far*0.01))]))
+            cam_lst.append(np.array([cam_o, *(cam_o+cam_d*max(near, far*0.05))]))
         np.savez_compressed(args.export_bbox_and_cams_only,
             xyz_min=xyz_min.cpu().numpy(), xyz_max=xyz_max.cpu().numpy(),
             cam_lst=np.array(cam_lst))
+        print('done')
+        sys.exit()
+
+    if args.export_coarse_only:
+        print('Export coarse visualization...')
+        with torch.no_grad():
+            ckpt_path = os.path.join(cfg.basedir, cfg.expname, 'coarse_last.tar')
+            model = utils.load_model(dvgo.DirectVoxGO, ckpt_path).to(device)
+            alpha = model.activate_density(model.density).squeeze().cpu().numpy()
+            rgb = torch.sigmoid(model.k0).squeeze().permute(1,2,3,0).cpu().numpy()
+        np.savez_compressed(args.export_coarse_only, alpha=alpha, rgb=rgb)
+        print('done')
         sys.exit()
 
     # train
@@ -475,8 +516,6 @@ if __name__=='__main__':
         stepsize = cfg.fine_model_and_render.stepsize
         render_viewpoints_kwargs = {
             'model': model,
-            'hwf': data_dict['hwf'],
-            'K': data_dict['K'],
             'ndc': cfg.data.ndc,
             'render_kwargs': {
                 'near': data_dict['near'],
@@ -484,6 +523,8 @@ if __name__=='__main__':
                 'bg': 1 if cfg.data.white_bkgd else 0,
                 'stepsize': stepsize,
                 'inverse_y': cfg.data.inverse_y,
+                'flip_x': cfg.data.flip_x,
+                'flip_y': cfg.data.flip_y,
             },
         }
 
@@ -493,7 +534,9 @@ if __name__=='__main__':
         os.makedirs(testsavedir, exist_ok=True)
         rgbs, disps = render_viewpoints(
                 render_poses=data_dict['poses'][data_dict['i_train']],
-                gt_imgs=data_dict['images'][data_dict['i_train']],
+                HW=data_dict['HW'][data_dict['i_train']],
+                Ks=data_dict['Ks'][data_dict['i_train']],
+                gt_imgs=[data_dict['images'][i].cpu().numpy() for i in data_dict['i_train']],
                 savedir=testsavedir,
                 eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
                 **render_viewpoints_kwargs)
@@ -506,7 +549,9 @@ if __name__=='__main__':
         os.makedirs(testsavedir, exist_ok=True)
         rgbs, disps = render_viewpoints(
                 render_poses=data_dict['poses'][data_dict['i_test']],
-                gt_imgs=data_dict['images'][data_dict['i_test']],
+                HW=data_dict['HW'][data_dict['i_test']],
+                Ks=data_dict['Ks'][data_dict['i_test']],
+                gt_imgs=[data_dict['images'][i].cpu().numpy() for i in data_dict['i_test']],
                 savedir=testsavedir,
                 eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
                 **render_viewpoints_kwargs)
@@ -515,6 +560,7 @@ if __name__=='__main__':
 
     # render video
     if args.render_video:
+        raise NotImplementedError
         testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_video_{ckpt_name}')
         os.makedirs(testsavedir, exist_ok=True)
         rgbs, disps = render_viewpoints(

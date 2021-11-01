@@ -182,17 +182,22 @@ class DirectVoxGO(torch.nn.Module):
             self._set_nonempty_mask()
         print('dvgo: scale_volume_grid finish')
 
-    def voxel_count_views(self, rays_o_tr, rays_d_tr, near, far, stepsize, downrate=1):
+    def voxel_count_views(self, rays_o_tr, rays_d_tr, imsz, near, far, stepsize, downrate=1, irregular_shape=False):
         print('dvgo: voxel_count_views start')
         eps_time = time.time()
         N_samples = int(np.linalg.norm(np.array(self.density.shape[2:])+1) / stepsize) + 1
         rng = torch.arange(N_samples)[None].float()
         count = torch.zeros_like(self.density.detach())
         device = rng.device
-        for rays_o_, rays_d_ in zip(rays_o_tr, rays_d_tr):
+        for rays_o_, rays_d_ in zip(rays_o_tr.split(imsz), rays_d_tr.split(imsz)):
             ones = torch.ones_like(self.density).requires_grad_()
-            rays_o_ = rays_o_[::downrate, ::downrate].to(device).flatten(0,-2).split(10000)
-            rays_d_ = rays_d_[::downrate, ::downrate].to(device).flatten(0,-2).split(10000)
+            if irregular_shape:
+                rays_o_ = rays_o_.split(10000)
+                rays_d_ = rays_d_.split(10000)
+            else:
+                rays_o_ = rays_o_[::downrate, ::downrate].to(device).flatten(0,-2).split(10000)
+                rays_d_ = rays_d_[::downrate, ::downrate].to(device).flatten(0,-2).split(10000)
+
             for rays_o, rays_d in zip(rays_o_, rays_d_):
                 vec = torch.where(rays_d==0, torch.full_like(rays_d, 1e-6), rays_d)
                 rate_a = (self.xyz_max - rays_o) / vec
@@ -414,7 +419,7 @@ def total_variation(v, mask=None):
 
 ''' Ray and batch
 '''
-def get_rays(H, W, K, c2w, mode='center', inverse_y=False):
+def get_rays(H, W, K, c2w, inverse_y, flip_x, flip_y, mode='center'):
     i, j = torch.meshgrid(
         torch.linspace(0, W-1, W, device=c2w.device),
         torch.linspace(0, H-1, H, device=c2w.device))  # pytorch's meshgrid has indexing='ij'
@@ -429,6 +434,11 @@ def get_rays(H, W, K, c2w, mode='center', inverse_y=False):
         j = j+torch.rand_like(j)
     else:
         raise NotImplementedError
+
+    if flip_x:
+        i = i.flip((1,))
+    if flip_y:
+        j = j.flip((0,))
     if inverse_y:
         dirs = torch.stack([(i-K[0][2])/K[0][0], (j-K[1][2])/K[1][1], torch.ones_like(i)], -1)
     else:
@@ -470,8 +480,8 @@ def ndc_rays(H, W, focal, near, rays_o, rays_d):
     return rays_o, rays_d
 
 
-def get_rays_of_a_view(H, W, K, c2w, ndc, mode='center', inverse_y=False):
-    rays_o, rays_d = get_rays(H, W, K, c2w, mode, inverse_y)
+def get_rays_of_a_view(H, W, K, c2w, ndc, inverse_y, flip_x, flip_y, mode='center'):
+    rays_o, rays_d = get_rays(H, W, K, c2w, inverse_y=inverse_y, flip_x=flip_x, flip_y=flip_y, mode=mode)
     viewdirs = rays_d / rays_d.norm(dim=-1, keepdim=True)
     if ndc:
         rays_o, rays_d = ndc_rays(H, W, K[0][0], 1., rays_o, rays_d)
@@ -479,36 +489,81 @@ def get_rays_of_a_view(H, W, K, c2w, ndc, mode='center', inverse_y=False):
 
 
 @torch.no_grad()
-def get_training_rays(rgb_tr, train_poses, H, W, K, ndc, inverse_y):
+def get_training_rays(rgb_tr, train_poses, HW, Ks, ndc, inverse_y, flip_x, flip_y):
     print('get_training_rays: start')
+    assert len(np.unique(HW, axis=0)) == 1
+    assert len(np.unique(Ks.reshape(len(Ks),-1), axis=0)) == 1
+    assert len(rgb_tr) == len(train_poses) and len(rgb_tr) == len(Ks) and len(rgb_tr) == len(HW)
+    H, W = HW[0]
+    K = Ks[0]
     eps_time = time.time()
     rays_o_tr = torch.zeros([len(rgb_tr), H, W, 3], device=rgb_tr.device)
     rays_d_tr = torch.zeros([len(rgb_tr), H, W, 3], device=rgb_tr.device)
     viewdirs_tr = torch.zeros([len(rgb_tr), H, W, 3], device=rgb_tr.device)
+    imsz = [1] * len(rgb_tr)
     for i, c2w in enumerate(train_poses):
-        rays_o, rays_d, viewdirs = get_rays_of_a_view(H=H, W=W, K=K, c2w=c2w, ndc=ndc, inverse_y=inverse_y)
+        rays_o, rays_d, viewdirs = get_rays_of_a_view(
+                H=H, W=W, K=K, c2w=c2w, ndc=ndc, inverse_y=inverse_y, flip_x=flip_x, flip_y=flip_y)
         rays_o_tr[i].copy_(rays_o.to(rgb_tr.device))
         rays_d_tr[i].copy_(rays_d.to(rgb_tr.device))
         viewdirs_tr[i].copy_(viewdirs.to(rgb_tr.device))
         del rays_o, rays_d, viewdirs
     eps_time = time.time() - eps_time
     print('get_training_rays: finish (eps time:', eps_time, 'sec)')
-    return rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr
+    return rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz
 
 
 @torch.no_grad()
-def get_training_rays_in_maskcache_sampling(rgb_tr_ori, train_poses, H, W, K, ndc, inverse_y, model, render_kwargs):
-    print('get_training_rays_in_maskcache_sampling: start')
-    CHUNK = 64
-    DEVICE = rgb_tr_ori.device
+def get_training_rays_flatten(rgb_tr_ori, train_poses, HW, Ks, ndc, inverse_y, flip_x, flip_y):
+    print('get_training_rays_flatten: start')
+    assert len(rgb_tr_ori) == len(train_poses) and len(rgb_tr_ori) == len(Ks) and len(rgb_tr_ori) == len(HW)
     eps_time = time.time()
-    rgb_tr = torch.zeros(rgb_tr_ori.view(-1,3).shape, device=DEVICE)
+    DEVICE = rgb_tr_ori[0].device
+    N = sum(im.shape[0] * im.shape[1] for im in rgb_tr_ori)
+    rgb_tr = torch.zeros([N,3], device=DEVICE)
     rays_o_tr = torch.zeros_like(rgb_tr)
     rays_d_tr = torch.zeros_like(rgb_tr)
     viewdirs_tr = torch.zeros_like(rgb_tr)
+    imsz = []
     top = 0
-    for c2w, img in zip(train_poses, rgb_tr_ori):
-        rays_o, rays_d, viewdirs = get_rays_of_a_view(H=H, W=W, K=K, c2w=c2w, ndc=ndc, inverse_y=inverse_y)
+    for c2w, img, (H, W), K in zip(train_poses, rgb_tr_ori, HW, Ks):
+        assert img.shape[:2] == (H, W)
+        rays_o, rays_d, viewdirs = get_rays_of_a_view(
+                H=H, W=W, K=K, c2w=c2w, ndc=ndc,
+                inverse_y=inverse_y, flip_x=flip_x, flip_y=flip_y)
+        n = H * W
+        rgb_tr[top:top+n].copy_(img.flatten(0,1))
+        rays_o_tr[top:top+n].copy_(rays_o.flatten(0,1).to(DEVICE))
+        rays_d_tr[top:top+n].copy_(rays_d.flatten(0,1).to(DEVICE))
+        viewdirs_tr[top:top+n].copy_(viewdirs.flatten(0,1).to(DEVICE))
+        imsz.append(n)
+        top += n
+
+    assert top == N
+    eps_time = time.time() - eps_time
+    print('get_training_rays_flatten: finish (eps time:', eps_time, 'sec)')
+    return rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz
+
+
+@torch.no_grad()
+def get_training_rays_in_maskcache_sampling(rgb_tr_ori, train_poses, HW, Ks, ndc, inverse_y, flip_x, flip_y, model, render_kwargs):
+    print('get_training_rays_in_maskcache_sampling: start')
+    assert len(rgb_tr_ori) == len(train_poses) and len(rgb_tr_ori) == len(Ks) and len(rgb_tr_ori) == len(HW)
+    CHUNK = 64
+    DEVICE = rgb_tr_ori[0].device
+    eps_time = time.time()
+    N = sum(im.shape[0] * im.shape[1] for im in rgb_tr_ori)
+    rgb_tr = torch.zeros([N,3], device=DEVICE)
+    rays_o_tr = torch.zeros_like(rgb_tr)
+    rays_d_tr = torch.zeros_like(rgb_tr)
+    viewdirs_tr = torch.zeros_like(rgb_tr)
+    imsz = []
+    top = 0
+    for c2w, img, (H, W), K in zip(train_poses, rgb_tr_ori, HW, Ks):
+        assert img.shape[:2] == (H, W)
+        rays_o, rays_d, viewdirs = get_rays_of_a_view(
+                H=H, W=W, K=K, c2w=c2w, ndc=ndc,
+                inverse_y=inverse_y, flip_x=flip_x, flip_y=flip_y)
         mask = torch.ones(img.shape[:2], device=DEVICE, dtype=torch.bool)
         for i in range(0, img.shape[0], CHUNK):
             rays_pts, mask_outbbox = model.sample_ray(
@@ -520,16 +575,17 @@ def get_training_rays_in_maskcache_sampling(rgb_tr_ori, train_poses, H, W, K, nd
         rays_o_tr[top:top+n].copy_(rays_o[mask].to(DEVICE))
         rays_d_tr[top:top+n].copy_(rays_d[mask].to(DEVICE))
         viewdirs_tr[top:top+n].copy_(viewdirs[mask].to(DEVICE))
+        imsz.append(n)
         top += n
 
-    print('get_training_rays_in_maskcache_sampling: ratio', top / np.prod(rgb_tr_ori.shape[:3]))
+    print('get_training_rays_in_maskcache_sampling: ratio', top / N)
     rgb_tr = rgb_tr[:top]
     rays_o_tr = rays_o_tr[:top]
     rays_d_tr = rays_d_tr[:top]
     viewdirs_tr = viewdirs_tr[:top]
     eps_time = time.time() - eps_time
     print('get_training_rays_in_maskcache_sampling: finish (eps time:', eps_time, 'sec)')
-    return rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr
+    return rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz
 
 
 def batch_indices_generator(N, BS):

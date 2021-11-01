@@ -5,6 +5,7 @@ from .load_blender import load_blender_data
 from .load_nsvf import load_nsvf_data
 from .load_blendedmvs import load_blendedmvs_data
 from .load_tankstemple import load_tankstemple_data
+from .load_co3d import load_co3d_data
 
 
 def load_data(args):
@@ -88,6 +89,20 @@ def load_data(args):
             else:
                 images = images[...,:3]*images[...,-1:]
 
+    elif args.dataset_type == 'co3d':
+        # each image can be in different shapes and intrinsics
+        images, masks, poses, render_poses, hwf, K, i_split = load_co3d_data(args)
+        print('Loaded co3d', args.datadir, args.annot_path, args.sequence_name)
+        i_train, i_val, i_test = i_split
+
+        near, far = inward_nearfar_heuristic(poses[i_train, :3, 3], ratio=0)
+
+        for i in range(len(images)):
+            if args.white_bkgd:
+                images[i] = images[i] * masks[i][...,None] + (1.-masks[i][...,None])
+            else:
+                images[i] = images[i] * masks[i][...,None]
+
     else:
         raise NotImplementedError(f'Unknown dataset type {args.dataset_type} exiting')
 
@@ -95,6 +110,8 @@ def load_data(args):
     H, W, focal = hwf
     H, W = int(H), int(W)
     hwf = [H, W, focal]
+    HW = np.array([im.shape[:2] for im in images])
+    irregular_shape = (images.dtype is np.dtype('object'))
 
     if K is None:
         K = np.array([
@@ -102,15 +119,20 @@ def load_data(args):
             [0, focal, 0.5*H],
             [0, 0, 1]
         ])
-    print('Intrinsics', K)
+
+    if len(K.shape) == 2:
+        Ks = K[None].repeat(len(poses), axis=0)
+    else:
+        Ks = K
 
     render_poses = render_poses[...,:4]
 
     data_dict = dict(
-        hwf=hwf, K=K, near=near, far=far,
+        hwf=hwf, HW=HW, Ks=Ks, near=near, far=far,
         i_train=i_train, i_val=i_val, i_test=i_test,
         poses=poses, render_poses=render_poses,
         images=images, depths=depths,
+        irregular_shape=irregular_shape,
     )
     return data_dict
 
