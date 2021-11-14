@@ -7,29 +7,31 @@ basedir = './logs/'               # where to store ckpts and logs
 '''
 data = dict(
     datadir=None,                 # path to dataset root folder
-    dataset_type=None,            # llff | blender | nsvf | blendedmvs | tankstemple
-    inverse_y=False,              # intrinsict mode
-    flip_x=False,                 # support co3d
-    flip_y=False,                 # support co3d
-    annot_path='',                # support co3d
-    split_path='',                # support co3d
-    sequence_name='',             # support co3d
+    dataset_type=None,            # blender | nsvf | blendedmvs | tankstemple | deepvoxels | co3d
+    inverse_y=False,              # intrinsict mode (to support blendedmvs, nsvf, tankstemple)
+    flip_x=False,                 # to support co3d
+    flip_y=False,                 # to support co3d
+    annot_path='',                # to support co3d
+    split_path='',                # to support co3d
+    sequence_name='',             # to support co3d
     load2gpu_on_the_fly=False,    # do not load all images into gpu (to save gpu memory)
     testskip=1,                   # subsample testset to preview results
-    white_bkgd=False,             # use white background [blender|tankstemple|nsvf]
-    half_res=False,               # downsample by a factor of 2 [blender]
-    factor=4,                     # downsample factor in [llff]
-    ndc=False,                    # use ndc coordinate (only for forward-facing)
-    spherify=False,               # inward-facing in [llff]
-    llffhold=8,                   # testsplit in [llff]
-    load_depths=False,            # load depth [llff]
+    white_bkgd=False,             # use white background (note that some dataset don't provide alpha and with blended bg color)
+    half_res=False,               # [TODO]
+    factor=4,                     # [TODO]
+
+    # Below are forward-facing llff specific settings. Not support yet.
+    ndc=False,                    # use ndc coordinate (only for forward-facing; not support yet)
+    spherify=False,               # inward-facing
+    llffhold=8,                   # testsplit
+    load_depths=False,            # load depth
 )
 
 ''' Template of training options
 '''
 coarse_train = dict(
     N_iters=10000,                # number of optimization steps
-    N_rand=8192,                  # batch size (number of random rays per gradient step)
+    N_rand=8192,                  # batch size (number of random rays per optimization step)
     lrate_density=1e-1,           # lr of density voxel grid
     lrate_k0=1e-1,                # lr of color/feature voxel grid
     lrate_rgbnet=1e-3,            # lr of the mlp to preduct view-dependent color
@@ -60,23 +62,23 @@ fine_train.update(dict(
 ''' Template of model and rendering options
 '''
 coarse_model_and_render = dict(
-    num_voxels=1024000,
-    num_voxels_base=1024000,
-    nearest=False,
-    pre_act_density=False,
-    in_act_density=False,
-    bbox_thres=1e-3,
-    mask_cache_thres=1e-3,
-    rgbnet_dim=0,
-    rgbnet_full_implicit=False,
-    rgbnet_direct=True,
-    rgbnet_depth=3,
-    rgbnet_width=128,
-    alpha_init=1e-6,
-    fast_color_thres=0,
-    maskout_near_cam_vox=True,
-    world_bound_scale=1,
-    stepsize=0.5,
+    num_voxels=1024000,           # expected number of voxel
+    num_voxels_base=1024000,      # to rescale delta distance
+    nearest=False,                # nearest interpolation
+    pre_act_density=False,        # pre-activated trilinear interpolation
+    in_act_density=False,         # in-activated trilinear interpolation
+    bbox_thres=1e-3,              # threshold to determine known free-space in the fine stage
+    mask_cache_thres=1e-3,        # threshold to determine a tighten BBox in the fine stage
+    rgbnet_dim=0,                 # feature voxel grid dim
+    rgbnet_full_implicit=False,   # let the colors MLP ignore feature voxel grid
+    rgbnet_direct=True,           # set to False to treat the first 3 dim of feature voxel grid as diffuse rgb
+    rgbnet_depth=3,               # depth of the colors MLP (there are rgbnet_depth-1 intermediate features)
+    rgbnet_width=128,             # width of the colors MLP
+    alpha_init=1e-6,              # set the alpha values everywhere at the begin of training
+    fast_color_thres=0,           # threshold of alpha value to skip the fine stage sampled point
+    maskout_near_cam_vox=True,    # maskout grid points that between cameras and their near planes
+    world_bound_scale=1,          # rescale the BBox enclosing the scene
+    stepsize=0.5,                 # sampling stepsize in volume rendering
 )
 
 fine_model_and_render = deepcopy(coarse_model_and_render)
