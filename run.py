@@ -65,7 +65,7 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
         HW = np.copy(HW)
         Ks = np.copy(Ks)
         HW //= render_factor
-        K[:, :2, :3] //= render_factor
+        Ks[:, :2, :3] //= render_factor
 
     rgbs = []
     disps = []
@@ -560,13 +560,14 @@ if __name__=='__main__':
 
     # render video
     if args.render_video:
-        raise NotImplementedError
         testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_video_{ckpt_name}')
         os.makedirs(testsavedir, exist_ok=True)
         rgbs, disps = render_viewpoints(
                 render_poses=data_dict['render_poses'],
-                savedir=testsavedir,
+                HW=data_dict['HW'][data_dict['i_test']][[0]].repeat(len(data_dict['render_poses']), 0),
+                Ks=data_dict['Ks'][data_dict['i_test']][[0]].repeat(len(data_dict['render_poses']), 0),
                 render_factor=args.render_video_factor,
+                savedir=testsavedir,
                 **render_viewpoints_kwargs)
         imageio.mimwrite(os.path.join(testsavedir, 'video.rgb.mp4'), utils.to8b(rgbs), fps=30, quality=8)
         imageio.mimwrite(os.path.join(testsavedir, 'video.disp.mp4'), utils.to8b(disps / np.max(disps)), fps=30, quality=8)
