@@ -1,6 +1,5 @@
 **/.ipynb_checkpoints
 **/__pycache__
-*.mp4
 *.npy
 *.npz
 *.dae

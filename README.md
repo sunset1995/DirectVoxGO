@@ -1,18 +1,17 @@
 # DirectVoxGO
 
-DirectVoxGO (Direct Voxel Grid Optimization) reconstructs a scene representation from a set of calibrated images capturing the scene.
+DirectVoxGO (Direct Voxel Grid Optimization, see our [paper](https://arxiv.org/abs/2111.11215)) reconstructs a scene representation from a set of calibrated images capturing the scene.
 - **NeRF-comparable quality** for synthesizing novel views from our scene representation.
 - **Super-fast convergence**: Our **`15 mins/scene`** vs. NeRF's `10~20+ hrs/scene`.
 - **No cross-scene pre-training required**: We optimize each scene from scratch.
 - **Better rendering speed**: Our **`<1 secs`** vs. NeRF's `29 secs` to synthesize a `800x800` images.
 
-Run times are measured on our machine with a single RTX 2080Ti GPU.
-
-[TODO] Training progress movie
+Below run times (*mm:ss*) are measured on our machine with a single RTX 2080 Ti GPU.
+![](./figs/github_teaser.mp4)
 
 ### Update
-- 2021.11.[TODO]: Support CO3D dataset.
-- 2021.11.[TODO]: Initial release. Issue page is disabled for now.
+- 2021.11.23: Support CO3D dataset.
+- 2021.11.23: Initial release. Issue page is disabled for now.
 
 ### Installation
 ```
@@ -20,7 +19,7 @@ git clone git@github.com:sunset1995/DirectVoxGO.git
 cd DirectVoxGO
 pip install -r requirements.txt
 ```
-Pytorch installation is machine dependent, please install the correct version for your machine. The tested version is pytorch 1.8.1 with python 3.7.4 .
+Pytorch installation is machine dependent, please install the correct version for your machine. The tested version is pytorch 1.8.1 with python 3.7.4.
 
 <details>
   <summary> Dependencies (click to expand) </summary>
@@ -88,7 +87,7 @@ Pytorch installation is machine dependent, please install the correct version fo
                     └── frame*.png
 </details>
 
-### Synthetic-NeRF, Synthetic-NSVF, BlendedMVS, and Tanks&Temples datasets
+### Synthetic-NeRF, Synthetic-NSVF, BlendedMVS, Tanks&Temples, DeepVoxels datasets
 We use the datasets organized by [NeRF](https://github.com/bmild/nerf), [NSVF](https://github.com/facebookresearch/NSVF), and [DeepVoxels](https://github.com/vsitzmann/deepvoxels). Download links:
 - [Synthetic-NeRF dataset](https://drive.google.com/drive/folders/128yBriW1IG_3NJ5Rp7APSTZsJqdJdfc1) (manually extract the `nerf_synthetic.zip` to `data/`)
 - [Synthetic-NSVF dataset](https://dl.fbaipublicfiles.com/nsvf/dataset/Synthetic_NSVF.zip) (manually extract the `Synthetic_NSVF.zip` to `data/`)
@@ -142,7 +141,7 @@ armchair.py  cube.py  greek.py  vase.py
 
 ### Your own config files
 Check the comments in [`configs/default.py`](./configs/default.py) for the configuable settings.
-The default values reproduced our main setup reported in our paper.
+The default values reproduce our main setup reported in our paper.
 We use [`mmcv`'s config system](https://mmcv.readthedocs.io/en/latest/understand_mmcv/config.html).
 To create a new config, please inherit `configs/default.py` first and then update the fields you want.
 Below is an example from `configs/blendedmvs/Character.py`:
@@ -164,7 +163,7 @@ data = dict(
 #### Extention to new dataset
 Adjusting the data related config fields to fit your camera coordinate system is recommend before implementing a new one.
 We provide two visualization tools for debugging.
-1. Inspect the camera and allocated BBox.
+1. Inspect the camera and the allocated BBox.
     - Export via `--export_bbox_and_cams_only {filename}.npz`:
       ```bash
       python run.py --config configs/nerf/mic.py --export_bbox_and_cams_only cam_mic.npz
