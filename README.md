@@ -7,7 +7,8 @@ DirectVoxGO (Direct Voxel Grid Optimization, see our [paper](https://arxiv.org/a
 - **Better rendering speed**: Our **`<1 secs`** vs. NeRF's `29 secs` to synthesize a `800x800` images.
 
 Below run times (*mm:ss*) are measured on our machine with a single RTX 2080 Ti GPU.
-![](./figs/github_teaser.mp4)
+
+https://user-images.githubusercontent.com/2712505/142961346-82cd84f5-d46e-4cfc-bce5-2bbb78f16272.mp4
 
 ### Update
 - 2021.11.23: Support CO3D dataset.
