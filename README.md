@@ -12,7 +12,7 @@ https://user-images.githubusercontent.com/2712505/142961346-82cd84f5-d46e-4cfc-b
 
 ### Update
 - 2021.11.23: Support CO3D dataset.
-- 2021.11.23: Initial release. Issue page is disabled for now.
+- 2021.11.23: Initial release. Issue page is disabled for now. Feel free to contact `chengsun@gapp.nthu.edu.tw` if you have any questions.
 
 ### Installation
 ```
