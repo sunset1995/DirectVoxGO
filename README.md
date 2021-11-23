@@ -6,7 +6,7 @@ DirectVoxGO (Direct Voxel Grid Optimization, see our [paper](https://arxiv.org/a
 - **No cross-scene pre-training required**: We optimize each scene from scratch.
 - **Better rendering speed**: Our **`<1 secs`** vs. NeRF's `29 secs` to synthesize a `800x800` images.
 
-Below run times (*mm:ss*) are measured on our machine with a single RTX 2080 Ti GPU.
+Below run-times (*mm:ss*) of our optimization progress are measured on a machine with a single RTX 2080 Ti GPU.
 
 https://user-images.githubusercontent.com/2712505/142961346-82cd84f5-d46e-4cfc-bce5-2bbb78f16272.mp4
 
