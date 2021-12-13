@@ -194,5 +194,15 @@ We have reported some ablation experiments in our paper supplementary material.
 Setting `N_iters`, `N_rand`, `num_voxels`, `rgbnet_depth`, `rgbnet_width` to larger values or setting `stepsize` to smaller values typically leads to better quality but need more computation.
 Only `stepsize` is tunable in testing phase, while all the other fields should remain the same as training.
 
+## Concurrent works
+[Plenoxels](https://alexyu.net/plenoxels/) directly optimize voxel grids and achieve super-fast convergence as well. They use sparse voxel grids but require custom CUDA implementation. They use spherical harmonics to model view-dependent RGB w/o using MLPs. Some of their components could be adapted to our code in the future extension:
+1. Total variation (TV) and Cauchy sparsity regularizer.
+2. Use NDC to extend to forward-facing datas.
+3. Use MSI to extend to unbounded inward-facing 360 datas.
+4. Replace current local-feature conditioned tiny MLP with the spherical harmonic coefficients.
+
+[VaxNeRF](https://github.com/naruya/VaxNeRF) use Visual Hull to speedup NeRF training. Only 30 lines of code modification are required based on existing NeRF code base.
+
+
 ## Acknowledgement
 The code base is origined from an awesome [nerf-pytorch](https://github.com/yenchenlin/nerf-pytorch) implementation, but it becomes very different from the code base now.
