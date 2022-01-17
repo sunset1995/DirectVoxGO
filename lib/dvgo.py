@@ -7,6 +7,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from torch_scatter import segment_coo
+
 
 '''Model'''
 class DirectVoxGO(torch.nn.Module):
@@ -242,9 +244,12 @@ class DirectVoxGO(torch.nn.Module):
         ind_norm = ((xyz - self.xyz_min) / (self.xyz_max - self.xyz_min)).flip((-1,)) * 2 - 1
         ret_lst = [
             # TODO: use `rearrange' to make it readable
-            F.grid_sample(grid, ind_norm, mode=mode, align_corners=align_corners).reshape(grid.shape[1],-1).T.reshape(*shape,grid.shape[1]).squeeze()
+            F.grid_sample(grid, ind_norm, mode=mode, align_corners=align_corners).reshape(grid.shape[1],-1).T.reshape(*shape,grid.shape[1])
             for grid in grids
         ]
+        for i in range(len(grids)):
+            if ret_lst[i].shape[-1] == 1:
+                ret_lst[i] = ret_lst[i].squeeze(-1)
         if len(ret_lst) == 1:
             return ret_lst[0]
         return ret_lst
@@ -271,15 +276,16 @@ class DirectVoxGO(torch.nn.Module):
         rays_pts = rays_o[...,None,:] + rays_d[...,None,:] * interpx[...,None]
         # 5. update mask for query points outside bbox
         mask_outbbox = mask_outbbox[...,None] | ((self.xyz_min>rays_pts) | (rays_pts>self.xyz_max)).any(dim=-1)
-        return rays_pts, mask_outbbox
+        return rays_pts, mask_outbbox, interpx
 
     def forward(self, rays_o, rays_d, viewdirs, global_step=None, **render_kwargs):
         '''Volume rendering'''
 
         ret_dict = {}
+        spatial_shape = rays_o.shape[:-1]
 
         # sample points on rays
-        rays_pts, mask_outbbox = self.sample_ray(
+        rays_pts, mask_outbbox, interpx = self.sample_ray(
                 rays_o=rays_o, rays_d=rays_d, is_train=global_step is not None, **render_kwargs)
         interval = render_kwargs['stepsize'] * self.voxel_size_ratio
 
@@ -303,13 +309,17 @@ class DirectVoxGO(torch.nn.Module):
             alpha[~mask_outbbox] = self.activate_density(density, interval)
 
         # compute accumulated transmittance
-        weights, alphainv_cum = get_ray_marching_ray(alpha)
+        weights, alphainv_last = get_ray_marching_weights(alpha)
+
+        # flattening
+        mask = (weights > self.fast_color_thres)
+        bin_sz = np.prod(spatial_shape)
+        bin_id = torch.arange(bin_sz).view(*spatial_shape,1).expand_as(mask)[mask]
+        weights = weights[mask]
 
         # query for color
-        mask = (weights > self.fast_color_thres)
-        k0 = torch.zeros(*weights.shape, self.k0_dim).to(weights)
         if not self.rgbnet_full_implicit:
-            k0[mask] = self.grid_sampler(rays_pts[mask], self.k0)
+            k0 = self.grid_sampler(rays_pts[mask], self.k0)
 
         if self.rgbnet is None:
             # no view-depend effect
@@ -319,35 +329,40 @@ class DirectVoxGO(torch.nn.Module):
             if self.rgbnet_direct:
                 k0_view = k0
             else:
-                k0_view = k0[..., 3:]
-                k0_diffuse = k0[..., :3]
-            viewdirs_emb = (viewdirs.unsqueeze(-1) * self.viewfreq).flatten(-2)
-            viewdirs_emb = torch.cat([viewdirs, viewdirs_emb.sin(), viewdirs_emb.cos()], -1)
+                k0_view = k0[:, 3:]
+                k0_diffuse = k0[:, :3]
             rays_xyz = (rays_pts[mask] - self.xyz_min) / (self.xyz_max - self.xyz_min)
             xyz_emb = (rays_xyz.unsqueeze(-1) * self.posfreq).flatten(-2)
             xyz_emb = torch.cat([rays_xyz, xyz_emb.sin(), xyz_emb.cos()], -1)
-            rgb_feat = torch.cat([
-                k0_view[mask],
-                xyz_emb,
-                # TODO: use `rearrange' to make it readable
-                viewdirs_emb.flatten(0,-2).unsqueeze(-2).repeat(1,weights.shape[-1],1)[mask.flatten(0,-2)]
-            ], -1)
-            rgb_logit = torch.zeros(*weights.shape, 3).to(weights)
-            rgb_logit[mask] = self.rgbnet(rgb_feat)
+            viewdirs_emb = (viewdirs.unsqueeze(-1) * self.viewfreq).flatten(-2)
+            viewdirs_emb = torch.cat([viewdirs, viewdirs_emb.sin(), viewdirs_emb.cos()], -1)
+            viewdirs_emb = viewdirs_emb.flatten(0,-2)[bin_id]
+            rgb_feat = torch.cat([k0_view, xyz_emb, viewdirs_emb], -1)
+            rgb_logit = self.rgbnet(rgb_feat)
             if self.rgbnet_direct:
                 rgb = torch.sigmoid(rgb_logit)
             else:
-                rgb_logit[mask] = rgb_logit[mask] + k0_diffuse
-                rgb = torch.sigmoid(rgb_logit)
+                rgb = torch.sigmoid(rgb_logit + k0_diffuse)
 
         # Ray marching
-        rgb_marched = (weights[...,None] * rgb).sum(-2) + alphainv_cum[...,[-1]] * render_kwargs['bg']
-        rgb_marched = rgb_marched.clamp(0, 1)
-        depth = (rays_o[...,None,:] - rays_pts).norm(dim=-1)
-        depth = (weights * depth).sum(-1) + alphainv_cum[...,-1] * render_kwargs['far']
-        disp = 1 / depth
+        rgb_marched = segment_coo(
+                src=(weights.unsqueeze(-1) * rgb),
+                index=bin_id,
+                out=torch.zeros([bin_sz, 3]),
+                reduce='sum')
+        rgb_marched += (alphainv_last * render_kwargs['bg']).flatten(0,-2)
+        rgb_marched = rgb_marched.reshape(*spatial_shape, 3)
+        with torch.no_grad():
+            depth = segment_coo(
+                    src=(weights/weights.sum(-1,keepdim=True).clamp_min(1e-10) * interpx[mask]),
+                    index=bin_id,
+                    out=torch.zeros([bin_sz]),
+                    reduce='sum')
+            depth = depth.reshape(spatial_shape)
+            depth[depth<interpx[...,0]] = render_kwargs['far']
+            disp = 1 / depth
         ret_dict.update({
-            'alphainv_cum': alphainv_cum,
+            'alphainv_last': alphainv_last,
             'weights': weights,
             'rgb_marched': rgb_marched,
             'raw_alpha': alpha,
@@ -355,6 +370,7 @@ class DirectVoxGO(torch.nn.Module):
             'depth': depth,
             'disp': disp,
             'mask': mask,
+            'bin_id': bin_id,
         })
         return ret_dict
 
@@ -404,10 +420,11 @@ def cumprod_exclusive(p):
     # Not sure why: it will be slow at the end of training if clamping at 1e-10 is not applied
     return torch.cat([torch.ones_like(p[...,[0]]), p.clamp_min(1e-10).cumprod(-1)], -1)
 
-def get_ray_marching_ray(alpha):
+def get_ray_marching_weights(alpha):
     alphainv_cum = cumprod_exclusive(1-alpha)
-    weights = alpha * alphainv_cum[..., :-1]
-    return weights, alphainv_cum
+    alphainv_pre, alphainv_last = alphainv_cum.split([alphainv_cum.shape[-1]-1, 1], dim=-1)
+    weights = alpha * alphainv_pre
+    return weights, alphainv_last
 
 def total_variation(v, mask=None):
     tv2 = v.diff(dim=2).abs()
@@ -569,7 +586,7 @@ def get_training_rays_in_maskcache_sampling(rgb_tr_ori, train_poses, HW, Ks, ndc
                 inverse_y=inverse_y, flip_x=flip_x, flip_y=flip_y)
         mask = torch.ones(img.shape[:2], device=DEVICE, dtype=torch.bool)
         for i in range(0, img.shape[0], CHUNK):
-            rays_pts, mask_outbbox = model.sample_ray(
+            rays_pts, mask_outbbox, interpx = model.sample_ray(
                     rays_o=rays_o[i:i+CHUNK], rays_d=rays_d[i:i+CHUNK], **render_kwargs)
             mask_outbbox[~mask_outbbox] |= (~model.mask_cache(rays_pts[~mask_outbbox]))
             mask[i:i+CHUNK] &= (~mask_outbbox).any(-1).to(DEVICE)

@@ -355,12 +355,12 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         loss = cfg_train.weight_main * F.mse_loss(render_result['rgb_marched'], target)
         psnr = utils.mse2psnr(loss.detach()).item()
         if cfg_train.weight_entropy_last > 0:
-            pout = render_result['alphainv_cum'][...,-1].clamp(1e-6, 1-1e-6)
+            pout = render_result['alphainv_last'].clamp(1e-6, 1-1e-6)
             entropy_last_loss = -(pout*torch.log(pout) + (1-pout)*torch.log(1-pout)).mean()
             loss += cfg_train.weight_entropy_last * entropy_last_loss
         if cfg_train.weight_rgbper > 0:
-            rgbper = (render_result['raw_rgb'] - target.unsqueeze(-2)).pow(2).sum(-1)
-            rgbper_loss = (rgbper * render_result['weights'].detach()).sum(-1).mean()
+            rgbper = (render_result['raw_rgb'] - target[render_result['bin_id']]).pow(2).sum(-1)
+            rgbper_loss = (rgbper * render_result['weights'].detach()).sum() / len(rays_o)
             loss += cfg_train.weight_rgbper * rgbper_loss
         if cfg_train.weight_tv_density>0 and global_step>cfg_train.tv_from and global_step%cfg_train.tv_every==0:
             loss += cfg_train.weight_tv_density * model.density_total_variation()
