@@ -66,7 +66,7 @@ void adam_upd_cuda(
 
   const size_t N = param.numel();
 
-  const int threads = 1024;
+  const int threads = 256;
   const int blocks = (N + threads - 1) / threads;
 
   const float step_size = lr * sqrt(1 - pow(beta2, (float)step)) / (1 - pow(beta1, (float)step));
@@ -90,7 +90,7 @@ void masked_adam_upd_cuda(
 
   const size_t N = param.numel();
 
-  const int threads = 1024;
+  const int threads = 256;
   const int blocks = (N + threads - 1) / threads;
 
   const float step_size = lr * sqrt(1 - pow(beta2, (float)step)) / (1 - pow(beta1, (float)step));
@@ -115,7 +115,7 @@ void adam_upd_with_perlr_cuda(
 
   const size_t N = param.numel();
 
-  const int threads = 1024;
+  const int threads = 256;
   const int blocks = (N + threads - 1) / threads;
 
   const float step_size = lr * sqrt(1 - pow(beta2, (float)step)) / (1 - pow(beta1, (float)step));
