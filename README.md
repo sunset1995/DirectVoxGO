@@ -2,7 +2,7 @@
 
 DirectVoxGO (Direct Voxel Grid Optimization, see our [paper](https://arxiv.org/abs/2111.11215)) reconstructs a scene representation from a set of calibrated images capturing the scene.
 - **NeRF-comparable quality** for synthesizing novel views from our scene representation.
-- **Super-fast convergence**: Our **`15 mins/scene`** vs. NeRF's `10~20+ hrs/scene`. Our newest version further improved speed by **1.8\~3.5**x. Still working on improving it...
+- **Super-fast convergence**: Our **`15 mins/scene`** vs. NeRF's `10~20+ hrs/scene`. The newest version further improved speed by **1.8\~3.5**x. Still working on improving it...
 - **No cross-scene pre-training required**: We optimize each scene from scratch.
 - **Better rendering speed**: Our **`0.36~0.07 secs`** vs. NeRF's `29 secs` to synthesize a `800x800` images.
 
@@ -211,6 +211,7 @@ Only `stepsize` is tunable in testing phase, while all the other fields should r
 
 [VaxNeRF](https://github.com/naruya/VaxNeRF) use Visual Hull to speedup NeRF training. Only 30 lines of code modification are required based on existing NeRF code base.
 
+[Instant-ngp](https://github.com/NVlabs/instant-ngp) use hash table to store the grid values. The collision is alleviated by multi-resolution (conceptual) grids and the follow-up MLP can handle the collision effecitvely. The efficient cuda implementation improve speed as well.
 
 ## Acknowledgement
 The code base is origined from an awesome [nerf-pytorch](https://github.com/yenchenlin/nerf-pytorch) implementation, but it becomes very different from the code base now.

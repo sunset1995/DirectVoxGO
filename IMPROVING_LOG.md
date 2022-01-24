@@ -2,7 +2,7 @@
 
 ### Custome CUDA implementation for efficiency
 Some intermediate steps are reimplemented in cuda (`lib/cuda/`), which improves training speed by 
-**1.6\~3.1**. Below show the results with dense grid under `256^3` voxels and `160^3` voxels and the training times are measured on a Telsa V100 GPU.
+**1.8\~3.5**. Below show the results with dense grid under `256^3` voxels and `160^3` voxels and the training times are measured on a Telsa V100 GPU.
 
 ---
 
