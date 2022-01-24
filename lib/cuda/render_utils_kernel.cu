@@ -80,7 +80,7 @@ std::vector<torch::Tensor> infer_t_minmax_cuda(
   auto t_min = torch::empty({n_rays}, rays_o.options());
   auto t_max = torch::empty({n_rays}, rays_o.options());
 
-  const int threads = 512;
+  const int threads = 256;
   const int blocks = (n_rays + threads - 1) / threads;
 
   AT_DISPATCH_FLOATING_TYPES(rays_o.type(), "infer_t_minmax_cuda", ([&] {
@@ -100,7 +100,7 @@ std::vector<torch::Tensor> infer_t_minmax_cuda(
 torch::Tensor infer_n_samples_cuda(torch::Tensor t_min, torch::Tensor t_max, const float stepdist) {
   const int n_rays = t_min.size(0);
   auto n_samples = torch::empty({n_rays}, torch::dtype(torch::kInt64).device(torch::kCUDA));
-  const int threads = 512;
+  const int threads = 256;
   const int blocks = (n_rays + threads - 1) / threads;
   AT_DISPATCH_FLOATING_TYPES(t_min.type(), "infer_n_samples_cuda", ([&] {
     infer_n_samples_cuda_kernel<scalar_t><<<blocks, threads>>>(
@@ -115,7 +115,7 @@ torch::Tensor infer_n_samples_cuda(torch::Tensor t_min, torch::Tensor t_max, con
 
 std::vector<torch::Tensor> infer_ray_start_dir_cuda(torch::Tensor rays_o, torch::Tensor rays_d, torch::Tensor t_min) {
   const int n_rays = rays_o.size(0);
-  const int threads = 512;
+  const int threads = 256;
   const int blocks = (n_rays + threads - 1) / threads;
   auto rays_start = torch::empty_like(rays_o);
   auto rays_dir = torch::empty_like(rays_o);
@@ -191,7 +191,7 @@ std::vector<torch::Tensor> sample_pts_on_rays_cuda(
         torch::Tensor rays_o, torch::Tensor rays_d,
         torch::Tensor xyz_min, torch::Tensor xyz_max,
         const float near, const float far, const float stepdist) {
-  const int threads = 512;
+  const int threads = 256;
   const int n_rays = rays_o.size(0);
 
   // Compute ray-bbox intersection
@@ -283,7 +283,7 @@ torch::Tensor maskcache_lookup_cuda(
     return out;
   }
 
-  const int threads = 512;
+  const int threads = 256;
   const int blocks = (n_pts + threads - 1) / threads;
 
   AT_DISPATCH_FLOATING_TYPES(xyz.type(), "maskcache_lookup_cuda", ([&] {
@@ -327,7 +327,7 @@ std::vector<torch::Tensor> raw2alpha_cuda(torch::Tensor density, const float shi
     return {exp_d, alpha};
   }
 
-  const int threads = 512;
+  const int threads = 256;
   const int blocks = (n_pts + threads - 1) / threads;
 
   AT_DISPATCH_FLOATING_TYPES(density.type(), "raw2alpha_cuda", ([&] {
@@ -362,7 +362,7 @@ torch::Tensor raw2alpha_backward_cuda(torch::Tensor exp_d, torch::Tensor grad_ba
     return grad;
   }
 
-  const int threads = 512;
+  const int threads = 256;
   const int blocks = (n_pts + threads - 1) / threads;
 
   AT_DISPATCH_FLOATING_TYPES(exp_d.type(), "raw2alpha_backward_cuda", ([&] {
@@ -379,8 +379,6 @@ torch::Tensor raw2alpha_backward_cuda(torch::Tensor exp_d, torch::Tensor grad_ba
 template <typename scalar_t>
 __global__ void alpha2weight_cuda_kernel(
     scalar_t* __restrict__ alpha,
-    int64_t* __restrict__ n_each,
-    int64_t* __restrict__ n_each_cumsum,
     const int n_rays,
     scalar_t* __restrict__ weight,
     scalar_t* __restrict__ T,
@@ -390,9 +388,8 @@ __global__ void alpha2weight_cuda_kernel(
 
   const int i_ray = blockIdx.x * blockDim.x + threadIdx.x;
   if(i_ray<n_rays) {
-    const int i_s = ((i_ray!=0) ? n_each_cumsum[i_ray-1] : 0);
-    const int i_e_max = n_each_cumsum[i_ray];
-    i_start[i_ray] = i_s;
+    const int i_s = i_start[i_ray];
+    const int i_e_max = i_end[i_ray];
 
     float T_cum = 1.;
     int i;
@@ -410,28 +407,41 @@ __global__ void alpha2weight_cuda_kernel(
   }
 }
 
+__global__ void __set_i_for_segment_start_end(
+        int64_t* __restrict__ ray_id,
+        const int n_pts,
+        int64_t* __restrict__ i_start,
+        int64_t* __restrict__ i_end) {
+  const int index = blockIdx.x * blockDim.x + threadIdx.x;
+  if(0<index && index<n_pts && ray_id[index]!=ray_id[index-1]) {
+    i_start[ray_id[index]] = index;
+    i_end[ray_id[index-1]] = index;
+  }
+}
+
 std::vector<torch::Tensor> alpha2weight_cuda(torch::Tensor alpha, torch::Tensor ray_id, const int n_rays) {
 
-  auto n_each = ray_id.bincount({}, n_rays);
-  auto n_each_cumsum = n_each.cumsum(0);
+  const int n_pts = alpha.size(0);
+  const int threads = 256;
 
   auto weight = torch::zeros_like(alpha);
   auto T = torch::ones_like(alpha);
-  auto alphainv_last = torch::empty({n_rays}, alpha.options());
-  auto i_start = torch::zeros_like(n_each);
-  auto i_end = torch::zeros_like(n_each);
-  if(n_rays==0) {
+  auto alphainv_last = torch::ones({n_rays}, alpha.options());
+  auto i_start = torch::zeros({n_rays}, torch::dtype(torch::kInt64).device(torch::kCUDA));
+  auto i_end = torch::zeros({n_rays}, torch::dtype(torch::kInt64).device(torch::kCUDA));
+  if(n_pts==0) {
     return {weight, T, alphainv_last, i_start, i_end};
   }
 
-  const int threads = 256;
+  __set_i_for_segment_start_end<<<(n_pts+threads-1)/threads, threads>>>(
+          ray_id.data<int64_t>(), n_pts, i_start.data<int64_t>(), i_end.data<int64_t>());
+  i_end[ray_id[n_pts-1]] = n_pts;
+
   const int blocks = (n_rays + threads - 1) / threads;
 
   AT_DISPATCH_FLOATING_TYPES(alpha.type(), "alpha2weight_cuda", ([&] {
     alpha2weight_cuda_kernel<scalar_t><<<blocks, threads>>>(
         alpha.data<scalar_t>(),
-        n_each.data<int64_t>(),
-        n_each_cumsum.data<int64_t>(),
         n_rays,
         weight.data<scalar_t>(),
         T.data<scalar_t>(),
@@ -498,6 +508,4 @@ torch::Tensor alpha2weight_backward_cuda(
 
   return grad;
 }
-
-
 

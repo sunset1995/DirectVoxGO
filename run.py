@@ -110,25 +110,22 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
             if eval_lpips_vgg:
                 lpips_vgg.append(utils.rgb_lpips(rgb, gt_imgs[i], net_name='vgg', device=c2w.device))
 
-        if savedir is not None:
-            rgb8 = utils.to8b(rgbs[-1])
+    if len(psnrs):
+        print('Testing psnr', np.mean(psnrs), '(avg)')
+        if eval_ssim: print('Testing ssim', np.mean(ssims), '(avg)')
+        if eval_lpips_vgg: print('Testing lpips (vgg)', np.mean(lpips_vgg), '(avg)')
+        if eval_lpips_alex: print('Testing lpips (alex)', np.mean(lpips_alex), '(avg)')
+
+    if savedir is not None:
+        print(f'Writing images to {savedir}')
+        for i in trange(len(rgbs)):
+            rgb8 = utils.to8b(rgbs[i])
             filename = os.path.join(savedir, '{:03d}.png'.format(i))
             imageio.imwrite(filename, rgb8)
 
     rgbs = np.array(rgbs)
     #disps = np.array(disps)
     disps = np.zeros_like(rgbs)
-    if len(psnrs):
-        '''
-        print('Testing psnr', [f'{p:.3f}' for p in psnrs])
-        if eval_ssim: print('Testing ssim', [f'{p:.3f}' for p in ssims])
-        if eval_lpips_vgg: print('Testing lpips (vgg)', [f'{p:.3f}' for p in lpips_vgg])
-        if eval_lpips_alex: print('Testing lpips (alex)', [f'{p:.3f}' for p in lpips_alex])
-        '''
-        print('Testing psnr', np.mean(psnrs), '(avg)')
-        if eval_ssim: print('Testing ssim', np.mean(ssims), '(avg)')
-        if eval_lpips_vgg: print('Testing lpips (vgg)', np.mean(lpips_vgg), '(avg)')
-        if eval_lpips_alex: print('Testing lpips (alex)', np.mean(lpips_alex), '(avg)')
 
     return rgbs, disps
 
