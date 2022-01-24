@@ -98,10 +98,8 @@ class DirectVoxGO(torch.nn.Module):
             self.mask_cache = MaskCache(
                     path=mask_cache_path,
                     mask_cache_thres=mask_cache_thres).to(self.xyz_min.device)
-            self._set_nonempty_mask()
         else:
             self.mask_cache = None
-            self.nonempty_mask = None
 
     def _set_grid_resolution(self, num_voxels):
         # Determine grid resolution
@@ -130,23 +128,6 @@ class DirectVoxGO(torch.nn.Module):
         }
 
     @torch.no_grad()
-    def _set_nonempty_mask(self):
-        # Find grid points that is inside nonempty (occupied) space
-        self_grid_xyz = torch.stack(torch.meshgrid(
-            torch.linspace(self.xyz_min[0], self.xyz_max[0], self.density.shape[2]),
-            torch.linspace(self.xyz_min[1], self.xyz_max[1], self.density.shape[3]),
-            torch.linspace(self.xyz_min[2], self.xyz_max[2], self.density.shape[4]),
-        ), -1)
-        nonempty_mask = self.mask_cache(self_grid_xyz)[None,None].contiguous()
-        if hasattr(self, 'nonempty_mask'):
-            self.nonempty_mask = nonempty_mask
-        else:
-            self.register_buffer('nonempty_mask', nonempty_mask)
-        return
-        #TODO
-        #self.density[~self.nonempty_mask] = -100
-
-    @torch.no_grad()
     def maskout_near_cam_vox(self, cam_o, near):
         self_grid_xyz = torch.stack(torch.meshgrid(
             torch.linspace(self.xyz_min[0], self.xyz_max[0], self.density.shape[2]),
@@ -173,8 +154,6 @@ class DirectVoxGO(torch.nn.Module):
                 F.interpolate(self.k0.data, size=tuple(self.world_size), mode='trilinear', align_corners=True))
         else:
             self.k0 = torch.nn.Parameter(torch.zeros([1, self.k0_dim, *self.world_size]))
-        if self.mask_cache is not None:
-            self._set_nonempty_mask()
         print('dvgo: scale_volume_grid finish')
 
     def voxel_count_views(self, rays_o_tr, rays_d_tr, imsz, near, far, stepsize, downrate=1, irregular_shape=False):
@@ -210,15 +189,10 @@ class DirectVoxGO(torch.nn.Module):
         return count
 
     def density_total_variation(self):
-        tv = total_variation(self.activate_density(self.density, 1), self.nonempty_mask)
-        return tv
+        raise NotImplementedError
 
     def k0_total_variation(self):
-        if self.rgbnet is not None:
-            v = self.k0
-        else:
-            v = torch.sigmoid(self.k0)
-        return total_variation(v, self.nonempty_mask)
+        raise NotImplementedError
 
     def activate_density(self, density, interval=None):
         interval = interval if interval is not None else self.voxel_size_ratio
@@ -459,16 +433,6 @@ class Alphas2Weights(torch.autograd.Function):
                 alpha, weights, T, alphainv_last,
                 i_start, i_end, ctx.n_rays, grad_weights, grad_last)
         return grad, None, None
-
-def total_variation(v, mask=None):
-    tv2 = v.diff(dim=2).abs()
-    tv3 = v.diff(dim=3).abs()
-    tv4 = v.diff(dim=4).abs()
-    if mask is not None:
-        tv2 = tv2[mask[:,:,:-1] & mask[:,:,1:]]
-        tv3 = tv3[mask[:,:,:,:-1] & mask[:,:,:,1:]]
-        tv4 = tv4[mask[:,:,:,:,:-1] & mask[:,:,:,:,1:]]
-    return (tv2.mean() + tv3.mean() + tv4.mean()) / 3
 
 
 ''' Ray and batch
