@@ -13,7 +13,7 @@ Below run-times (*mm:ss*) of our optimization progress are measured on a machine
 https://user-images.githubusercontent.com/2712505/142961346-82cd84f5-d46e-4cfc-bce5-2bbb78f16272.mp4
 
 ### Update
-- 2022.01.23: Improving training speed by **1.8\~3.5**x (see [report](IMPROVING_LOG.md)). Some intermediate steps are re-implemented in cuda but not fully fused---flexible but sacrficing speed.
+- 2022.01.23: Improving training speed by **1.8\~3.5**x (see [report](IMPROVING_LOG.md)). Some intermediate steps are re-implemented in cuda but not fully fused---flexible but sacrficing speed. *Telsa V100*, *RTX 2080 Ti*, and *RTX 1080 Ti* are tested.
 - 2021.11.23: Support CO3D dataset.
 - 2021.11.23: Initial release.
 
