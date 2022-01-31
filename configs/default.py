@@ -18,11 +18,13 @@ data = dict(
     testskip=1,                   # subsample testset to preview results
     white_bkgd=False,             # use white background (note that some dataset don't provide alpha and with blended bg color)
     half_res=False,               # [TODO]
-    factor=4,                     # [TODO]
 
     # Below are forward-facing llff specific settings. Not support yet.
     ndc=False,                    # use ndc coordinate (only for forward-facing; not support yet)
     spherify=False,               # inward-facing
+    factor=4,                     # [TODO]
+    width=None,
+    height=None,
     llffhold=8,                   # testsplit
     load_depths=False,            # load depth
 )

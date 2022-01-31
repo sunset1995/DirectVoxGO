@@ -92,7 +92,10 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True, lo
 
     sfx = ''
 
-    if factor is not None and factor != 1:
+    if height is not None and width is not None:
+        _minify(basedir, resolutions=[[height, width]])
+        sfx = '_{}x{}'.format(width, height)
+    elif factor is not None and factor != 1:
         sfx = '_{}'.format(factor)
         _minify(basedir, factors=[factor])
         factor = factor
@@ -266,9 +269,11 @@ def spherify_poses(poses, bds, depths):
     return poses_reset, new_poses, bds, depths
 
 
-def load_llff_data(basedir, factor=8, recenter=True, bd_factor=.75, spherify=False, path_zflat=False, load_depths=False):
+def load_llff_data(basedir, factor=8, width=None, height=None,
+                   recenter=True, bd_factor=.75, spherify=False, path_zflat=False, load_depths=False):
 
-    poses, bds, imgs, *depths = _load_data(basedir, factor=factor, load_depths=load_depths) # factor=8 downsamples original imgs by 8x
+    poses, bds, imgs, *depths = _load_data(basedir, factor=factor, width=width, height=height,
+                                           load_depths=load_depths) # factor=8 downsamples original imgs by 8x
     print('Loaded', basedir, bds.min(), bds.max())
     if load_depths:
         depths = depths[0]

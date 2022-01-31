@@ -15,7 +15,7 @@ def load_data(args):
 
     if args.dataset_type == 'llff':
         images, depths, poses, bds, render_poses, i_test = load_llff_data(
-                args.datadir, args.factor,
+                args.datadir, args.factor, args.width, args.height,
                 recenter=True, bd_factor=.75,
                 spherify=args.spherify,
                 load_depths=args.load_depths)
