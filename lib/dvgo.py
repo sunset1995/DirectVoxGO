@@ -27,7 +27,7 @@ class DirectVoxGO(torch.nn.Module):
                  fast_color_thres=0,
                  rgbnet_dim=0, rgbnet_direct=False, rgbnet_full_implicit=False,
                  rgbnet_depth=3, rgbnet_width=128,
-                 posbase_pe=5, viewbase_pe=4,
+                 viewbase_pe=4,
                  **kwargs):
         super(DirectVoxGO, self).__init__()
         self.register_buffer('xyz_min', torch.Tensor(xyz_min))
@@ -54,7 +54,7 @@ class DirectVoxGO(torch.nn.Module):
             'rgbnet_dim': rgbnet_dim, 'rgbnet_direct': rgbnet_direct,
             'rgbnet_full_implicit': rgbnet_full_implicit,
             'rgbnet_depth': rgbnet_depth, 'rgbnet_width': rgbnet_width,
-            'posbase_pe': posbase_pe, 'viewbase_pe': viewbase_pe,
+            'viewbase_pe': viewbase_pe,
         }
         self.rgbnet_full_implicit = rgbnet_full_implicit
         if rgbnet_dim <= 0:
@@ -70,9 +70,8 @@ class DirectVoxGO(torch.nn.Module):
                 self.k0_dim = rgbnet_dim
             self.k0 = torch.nn.Parameter(torch.zeros([1, self.k0_dim, *self.world_size]))
             self.rgbnet_direct = rgbnet_direct
-            self.register_buffer('posfreq', torch.FloatTensor([(2**i) for i in range(posbase_pe)]))
             self.register_buffer('viewfreq', torch.FloatTensor([(2**i) for i in range(viewbase_pe)]))
-            dim0 = (3+3*posbase_pe*2) + (3+3*viewbase_pe*2)
+            dim0 = (3+3*viewbase_pe*2)
             if self.rgbnet_full_implicit:
                 pass
             elif rgbnet_direct:
@@ -92,14 +91,24 @@ class DirectVoxGO(torch.nn.Module):
             print('dvgo: mlp', self.rgbnet)
 
         # Using the coarse geometry if provided (used to determine known free space and unknown space)
+        # Re-implement as occupancy grid (2021/1/31)
         self.mask_cache_path = mask_cache_path
         self.mask_cache_thres = mask_cache_thres
         if mask_cache_path is not None and mask_cache_path:
-            self.mask_cache = MaskCache(
+            mask_cache = MaskCache(
                     path=mask_cache_path,
                     mask_cache_thres=mask_cache_thres).to(self.xyz_min.device)
+            self_grid_xyz = torch.stack(torch.meshgrid(
+                torch.linspace(self.xyz_min[0], self.xyz_max[0], self.density.shape[2]),
+                torch.linspace(self.xyz_min[1], self.xyz_max[1], self.density.shape[3]),
+                torch.linspace(self.xyz_min[2], self.xyz_max[2], self.density.shape[4]),
+            ), -1)
+            mask = mask_cache(self_grid_xyz)
         else:
-            self.mask_cache = None
+            mask = torch.ones(list(self.world_size), dtype=torch.bool)
+        self.mask_cache = MaskCache(
+                path=None, mask=mask,
+                xyz_min=self.xyz_min, xyz_max=self.xyz_max)
 
     def _set_grid_resolution(self, num_voxels):
         # Determine grid resolution
@@ -154,6 +163,20 @@ class DirectVoxGO(torch.nn.Module):
                 F.interpolate(self.k0.data, size=tuple(self.world_size), mode='trilinear', align_corners=True))
         else:
             self.k0 = torch.nn.Parameter(torch.zeros([1, self.k0_dim, *self.world_size]))
+
+        mask_cache = MaskCache(
+                path=self.mask_cache_path,
+                mask_cache_thres=self.mask_cache_thres).to(self.xyz_min.device)
+        self_grid_xyz = torch.stack(torch.meshgrid(
+            torch.linspace(self.xyz_min[0], self.xyz_max[0], self.density.shape[2]),
+            torch.linspace(self.xyz_min[1], self.xyz_max[1], self.density.shape[3]),
+            torch.linspace(self.xyz_min[2], self.xyz_max[2], self.density.shape[4]),
+        ), -1)
+        self_alpha = F.max_pool3d(self.activate_density(self.density), kernel_size=3, padding=1, stride=1)[0,0]
+        self.mask_cache = MaskCache(
+                path=None, mask=mask_cache(self_grid_xyz) & (self_alpha>1e-4),
+                xyz_min=self.xyz_min, xyz_max=self.xyz_max)
+
         print('dvgo: scale_volume_grid finish')
 
     def voxel_count_views(self, rays_o_tr, rays_d_tr, imsz, near, far, stepsize, downrate=1, irregular_shape=False):
@@ -311,13 +334,10 @@ class DirectVoxGO(torch.nn.Module):
             else:
                 k0_view = k0[:, 3:]
                 k0_diffuse = k0[:, :3]
-            ray_xyz = (ray_pts - self.xyz_min) / (self.xyz_max - self.xyz_min)
-            xyz_emb = (ray_xyz.unsqueeze(-1) * self.posfreq).flatten(-2)
-            xyz_emb = torch.cat([ray_xyz, xyz_emb.sin(), xyz_emb.cos()], -1)
             viewdirs_emb = (viewdirs.unsqueeze(-1) * self.viewfreq).flatten(-2)
             viewdirs_emb = torch.cat([viewdirs, viewdirs_emb.sin(), viewdirs_emb.cos()], -1)
             viewdirs_emb = viewdirs_emb.flatten(0,-2)[ray_id]
-            rgb_feat = torch.cat([k0_view, xyz_emb, viewdirs_emb], -1)
+            rgb_feat = torch.cat([k0_view, viewdirs_emb], -1)
             rgb_logit = self.rgbnet(rgb_feat)
             if self.rgbnet_direct:
                 rgb = torch.sigmoid(rgb_logit)
@@ -361,17 +381,22 @@ class DirectVoxGO(torch.nn.Module):
 It supports query for the known free space and unknown space.
 '''
 class MaskCache(nn.Module):
-    def __init__(self, path, mask_cache_thres):
+    def __init__(self, path=None, mask_cache_thres=None, mask=None, xyz_min=None, xyz_max=None):
         super().__init__()
-        st = torch.load(path)
-        self.mask_cache_thres = mask_cache_thres
-        density = F.max_pool3d(st['model_state_dict']['density'], kernel_size=3, padding=1, stride=1)
-        alpha = 1 - torch.exp(-F.softplus(density + st['model_kwargs']['act_shift']) * st['model_kwargs']['voxel_size_ratio'])
-        mask = (alpha >= self.mask_cache_thres).squeeze(0).squeeze(0)
-        self.register_buffer('mask', mask)
+        if path is not None:
+            st = torch.load(path)
+            self.mask_cache_thres = mask_cache_thres
+            density = F.max_pool3d(st['model_state_dict']['density'], kernel_size=3, padding=1, stride=1)
+            alpha = 1 - torch.exp(-F.softplus(density + st['model_kwargs']['act_shift']) * st['model_kwargs']['voxel_size_ratio'])
+            mask = (alpha >= self.mask_cache_thres).squeeze(0).squeeze(0)
+            xyz_min = torch.Tensor(st['model_kwargs']['xyz_min'])
+            xyz_max = torch.Tensor(st['model_kwargs']['xyz_max'])
+        else:
+            mask = mask.bool()
+            xyz_min = torch.Tensor(xyz_min)
+            xyz_max = torch.Tensor(xyz_max)
 
-        xyz_min = torch.Tensor(st['model_kwargs']['xyz_min'])
-        xyz_max = torch.Tensor(st['model_kwargs']['xyz_max'])
+        self.register_buffer('mask', mask)
         xyz_len = xyz_max - xyz_min
         self.register_buffer('xyz2ijk_scale', (torch.Tensor(list(mask.shape)) - 1) / xyz_len)
         self.register_buffer('xyz2ijk_shift', -xyz_min * self.xyz2ijk_scale)

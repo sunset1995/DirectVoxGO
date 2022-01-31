@@ -317,6 +317,11 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
     global_step = -1
     for global_step in trange(1+start, 1+cfg_train.N_iters):
 
+        # renew occupancy grid
+        if model.mask_cache is not None and (global_step + 500) % 1000 == 0:
+            self_alpha = F.max_pool3d(model.activate_density(model.density), kernel_size=3, padding=1, stride=1)[0,0]
+            model.mask_cache.mask &= (self_alpha > model.fast_color_thres)
+
         # progress scaling checkpoint
         if global_step in cfg_train.pg_scale:
             model.scale_volume_grid(model.num_voxels * 2)
