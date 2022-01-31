@@ -1,6 +1,6 @@
 import numpy as np
 import os, imageio
-
+import torch
 
 ########## Slightly modified version of LLFF data loading code
 ##########  see https://github.com/Fyusion/LLFF for original
@@ -342,7 +342,7 @@ def load_llff_data(basedir, factor=8, width=None, height=None,
         # Generate poses for spiral path
         render_poses = render_path_spiral(c2w_path, up, rads, focal, zdelta, zrate=.5, rots=N_rots, N=N_views)
 
-    render_poses = np.array(render_poses).astype(np.float32)
+    render_poses = torch.Tensor(render_poses)
 
     c2w = poses_avg(poses)
     print('Data:')

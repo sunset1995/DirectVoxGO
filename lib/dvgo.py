@@ -220,12 +220,14 @@ class DirectVoxGO(torch.nn.Module):
         return count
 
     def density_total_variation_add_grad(self, weight):
+        weight = weight * self.world_size.max() / 128
         total_variation_cuda.total_variation_add_grad(
-            self.density, self.density.grad, weight)
+            self.density, self.density.grad, weight, weight, weight)
 
     def k0_total_variation_add_grad(self, weight):
+        weight = weight * self.world_size.max() / 128
         total_variation_cuda.total_variation_add_grad(
-            self.k0, self.k0.grad, weight)
+            self.k0, self.k0.grad, weight, weight, weight)
 
     def activate_density(self, density, interval=None):
         interval = interval if interval is not None else self.voxel_size_ratio

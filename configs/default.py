@@ -49,6 +49,7 @@ coarse_train = dict(
     tv_before=0,
     weight_tv_density=0.0,        # weight of total variation loss of density voxel grid
     weight_tv_k0=0.0,             # weight of total variation loss of color/feature voxel grid
+    weight_tv_z_scale=10.,
     pg_scale=[],                  # checkpoints for progressive scaling
     skip_zero_grad_fields=[],
 )
@@ -67,6 +68,8 @@ fine_train.update(dict(
 ''' Template of model and rendering options
 '''
 coarse_model_and_render = dict(
+    atlas_mode=False,
+    mpi_depth=64,
     num_voxels=1024000,           # expected number of voxel
     num_voxels_base=1024000,      # to rescale delta distance
     nearest=False,                # nearest interpolation

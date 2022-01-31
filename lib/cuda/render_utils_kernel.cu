@@ -235,6 +235,57 @@ std::vector<torch::Tensor> sample_pts_on_rays_cuda(
   return {rays_pts, mask_outbbox, ray_id, step_id, N_steps, t_min, t_max};
 }
 
+template <typename scalar_t>
+__global__ void sample_ndc_pts_on_rays_cuda_kernel(
+        const scalar_t* __restrict__ rays_o,
+        const scalar_t* __restrict__ rays_d,
+        const scalar_t* __restrict__ xyz_min,
+        const scalar_t* __restrict__ xyz_max,
+        const int N_samples, const int n_rays,
+        scalar_t* __restrict__ rays_pts,
+        bool* __restrict__ mask_outbbox) {
+  const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if(idx<N_samples*n_rays) {
+    const int i_ray = idx / N_samples;
+    const int i_step = idx % N_samples;
+
+    const int offset_p = idx * 3;
+    const int offset_r = i_ray * 3;
+    const float dist = ((float)i_step) / (N_samples-1);
+    const float px = rays_o[offset_r  ] + rays_d[offset_r  ] * dist;
+    const float py = rays_o[offset_r+1] + rays_d[offset_r+1] * dist;
+    const float pz = rays_o[offset_r+2] + rays_d[offset_r+2] * dist;
+    rays_pts[offset_p  ] = px;
+    rays_pts[offset_p+1] = py;
+    rays_pts[offset_p+2] = pz;
+    mask_outbbox[idx] = (xyz_min[0]>px) | (xyz_min[1]>py) | (xyz_min[2]>pz) | \
+                        (xyz_max[0]<px) | (xyz_max[1]<py) | (xyz_max[2]<pz);
+  }
+}
+
+std::vector<torch::Tensor> sample_ndc_pts_on_rays_cuda(
+        torch::Tensor rays_o, torch::Tensor rays_d,
+        torch::Tensor xyz_min, torch::Tensor xyz_max,
+        const int N_samples) {
+  const int threads = 256;
+  const int n_rays = rays_o.size(0);
+
+  auto rays_pts = torch::empty({n_rays, N_samples, 3}, torch::dtype(rays_o.dtype()).device(torch::kCUDA));
+  auto mask_outbbox = torch::empty({n_rays, N_samples}, torch::dtype(torch::kBool).device(torch::kCUDA));
+
+  AT_DISPATCH_FLOATING_TYPES(rays_o.type(), "sample_ndc_pts_on_rays_cuda", ([&] {
+    sample_ndc_pts_on_rays_cuda_kernel<scalar_t><<<(n_rays*N_samples+threads-1)/threads, threads>>>(
+        rays_o.data<scalar_t>(),
+        rays_d.data<scalar_t>(),
+        xyz_min.data<scalar_t>(),
+        xyz_max.data<scalar_t>(),
+        N_samples, n_rays,
+        rays_pts.data<scalar_t>(),
+        mask_outbbox.data<bool>());
+  }));
+  return {rays_pts, mask_outbbox};
+}
+
 
 /*
    MaskCache lookup to skip known freespace.

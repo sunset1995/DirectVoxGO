@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from lib import utils, dvgo
+from lib import utils, dvgo, dmpigo
 from lib.load_data import load_data
 
 
@@ -171,7 +171,10 @@ def compute_bbox_by_cam_frustrm(args, cfg, HW, Ks, poses, i_train, near, far, **
                 H=H, W=W, K=K, c2w=c2w,
                 ndc=cfg.data.ndc, inverse_y=cfg.data.inverse_y,
                 flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y)
-        pts_nf = torch.stack([rays_o+viewdirs*near, rays_o+viewdirs*far])
+        if cfg.data.ndc:
+            pts_nf = torch.stack([rays_o+rays_d*near, rays_o+rays_d*far])
+        else:
+            pts_nf = torch.stack([rays_o+viewdirs*near, rays_o+viewdirs*far])
         xyz_min = torch.minimum(xyz_min, pts_nf.amin((0,1,2)))
         xyz_max = torch.maximum(xyz_max, pts_nf.amax((0,1,2)))
     print('compute_bbox_by_cam_frustrm: xyz_min', xyz_min)
@@ -228,29 +231,44 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
     else:
         reload_ckpt_path = None
 
-    # init model
-    model_kwargs = copy.deepcopy(cfg_model)
-    num_voxels = model_kwargs.pop('num_voxels')
-    if len(cfg_train.pg_scale) and reload_ckpt_path is None:
-        num_voxels = int(num_voxels / (2**len(cfg_train.pg_scale)))
-    model = dvgo.DirectVoxGO(
-        xyz_min=xyz_min, xyz_max=xyz_max,
-        num_voxels=num_voxels,
-        mask_cache_path=coarse_ckpt_path,
-        **model_kwargs)
-    if cfg_model.maskout_near_cam_vox:
-        model.maskout_near_cam_vox(poses[i_train,:3,3], near)
-    model = model.to(device)
-
-    # init optimizer
-    optimizer = utils.create_optimizer_or_freeze_model(model, cfg_train, global_step=0)
-
-    # load checkpoint if there is
+    # init model and optimizer
     if reload_ckpt_path is None:
         print(f'scene_rep_reconstruction ({stage}): train from scratch')
         start = 0
+        # init model
+        model_kwargs = copy.deepcopy(cfg_model)
+        if cfg.data.ndc:
+            print(f'scene_rep_reconstruction ({stage}): \033[96muse multiplane images\033[0m')
+            num_voxels = model_kwargs.pop('num_voxels')
+            if len(cfg_train.pg_scale) and reload_ckpt_path is None:
+                num_voxels = int(num_voxels / (2**len(cfg_train.pg_scale)))
+            model = dmpigo.DirectMPIGO(
+                xyz_min=xyz_min, xyz_max=xyz_max,
+                num_voxels=num_voxels,
+                mask_cache_path=coarse_ckpt_path,
+                **model_kwargs)
+        else:
+            print(f'scene_rep_reconstruction ({stage}): \033[96muse dense voxel grid\033[0m')
+            num_voxels = model_kwargs.pop('num_voxels')
+            if len(cfg_train.pg_scale) and reload_ckpt_path is None:
+                num_voxels = int(num_voxels / (2**len(cfg_train.pg_scale)))
+            model = dvgo.DirectVoxGO(
+                xyz_min=xyz_min, xyz_max=xyz_max,
+                num_voxels=num_voxels,
+                mask_cache_path=coarse_ckpt_path,
+                **model_kwargs)
+            if cfg_model.maskout_near_cam_vox:
+                model.maskout_near_cam_vox(poses[i_train,:3,3], near)
+        model = model.to(device)
+        optimizer = utils.create_optimizer_or_freeze_model(model, cfg_train, global_step=0)
     else:
         print(f'scene_rep_reconstruction ({stage}): reload from {reload_ckpt_path}')
+        if cfg.data.ndc:
+            model_class = dmpigo.DirectMPIGO
+        else:
+            model_class = dvgo.DirectVoxGO
+        model = utils.load_model(model_class, reload_ckpt_path).to(device)
+        optimizer = utils.create_optimizer_or_freeze_model(model, cfg_train, global_step=0)
         model, optimizer, start = utils.load_checkpoint(
                 model, optimizer, reload_ckpt_path, args.no_reload_optimizer)
 
@@ -324,7 +342,14 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
 
         # progress scaling checkpoint
         if global_step in cfg_train.pg_scale:
-            model.scale_volume_grid(model.num_voxels * 2)
+            n_rest_scales = len(cfg_train.pg_scale)-cfg_train.pg_scale.index(global_step)-1
+            cur_voxels = int(cfg_model.num_voxels / (2**n_rest_scales))
+            if isinstance(model, dvgo.DirectVoxGO):
+                model.scale_volume_grid(cur_voxels)
+            elif isinstance(model, dmpigo.DirectMPIGO):
+                model.scale_volume_grid(cur_voxels, model.mpi_depth)
+            else:
+                raise NotImplementedError
             optimizer = utils.create_optimizer_or_freeze_model(model, cfg_train, global_step=0)
             model.density.data.sub_(1)
 
@@ -371,9 +396,9 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
 
         if global_step<cfg_train.tv_before and global_step>cfg_train.tv_after and global_step%cfg_train.tv_every==0:
             if cfg_train.weight_tv_density>0:
-                model.density_total_variation_add_grad(cfg_train.weight_tv_density / len(target))
+                model.density_total_variation_add_grad(cfg_train.weight_tv_density/len(rays_o), cfg_train.weight_tv_z_scale)
             if cfg_train.weight_tv_k0>0:
-                model.k0_total_variation_add_grad(cfg_train.weight_tv_k0 / len(target))
+                model.k0_total_variation_add_grad(cfg_train.weight_tv_k0/len(rays_o), cfg_train.weight_tv_z_scale)
 
         optimizer.step()
         psnr_lst.append(psnr.item())
@@ -428,21 +453,28 @@ def train(args, cfg, data_dict):
     # coarse geometry searching
     eps_coarse = time.time()
     xyz_min_coarse, xyz_max_coarse = compute_bbox_by_cam_frustrm(args=args, cfg=cfg, **data_dict)
-    scene_rep_reconstruction(
-            args=args, cfg=cfg,
-            cfg_model=cfg.coarse_model_and_render, cfg_train=cfg.coarse_train,
-            xyz_min=xyz_min_coarse, xyz_max=xyz_max_coarse,
-            data_dict=data_dict, stage='coarse')
-    eps_coarse = time.time() - eps_coarse
-    eps_time_str = f'{eps_coarse//3600:02.0f}:{eps_coarse//60%60:02.0f}:{eps_coarse%60:02.0f}'
-    print('train: coarse geometry searching in', eps_time_str)
+    if cfg.coarse_train.N_iters > 0:
+        scene_rep_reconstruction(
+                args=args, cfg=cfg,
+                cfg_model=cfg.coarse_model_and_render, cfg_train=cfg.coarse_train,
+                xyz_min=xyz_min_coarse, xyz_max=xyz_max_coarse,
+                data_dict=data_dict, stage='coarse')
+        eps_coarse = time.time() - eps_coarse
+        eps_time_str = f'{eps_coarse//3600:02.0f}:{eps_coarse//60%60:02.0f}:{eps_coarse%60:02.0f}'
+        print('train: coarse geometry searching in', eps_time_str)
+        coarse_ckpt_path = os.path.join(cfg.basedir, cfg.expname, f'coarse_last.tar')
+    else:
+        print('train: skip coarse geometry searching')
+        coarse_ckpt_path = None
 
     # fine detail reconstruction
     eps_fine = time.time()
-    coarse_ckpt_path = os.path.join(cfg.basedir, cfg.expname, f'coarse_last.tar')
-    xyz_min_fine, xyz_max_fine = compute_bbox_by_coarse_geo(
-            model_class=dvgo.DirectVoxGO, model_path=coarse_ckpt_path,
-            thres=cfg.fine_model_and_render.bbox_thres)
+    if cfg.data.ndc:
+        xyz_min_fine, xyz_max_fine = xyz_min_coarse.clone(), xyz_max_coarse.clone()
+    else:
+        xyz_min_fine, xyz_max_fine = compute_bbox_by_coarse_geo(
+                model_class=dvgo.DirectVoxGO, model_path=coarse_ckpt_path,
+                thres=cfg.fine_model_and_render.bbox_thres)
     scene_rep_reconstruction(
             args=args, cfg=cfg,
             cfg_model=cfg.fine_model_and_render, cfg_train=cfg.fine_train,
@@ -518,7 +550,11 @@ if __name__=='__main__':
         else:
             ckpt_path = os.path.join(cfg.basedir, cfg.expname, 'fine_last.tar')
         ckpt_name = ckpt_path.split('/')[-1][:-4]
-        model = utils.load_model(dvgo.DirectVoxGO, ckpt_path).to(device)
+        if cfg.data.ndc:
+            model_class = dmpigo.DirectMPIGO
+        else:
+            model_class = dvgo.DirectVoxGO
+        model = utils.load_model(model_class, ckpt_path).to(device)
         stepsize = cfg.fine_model_and_render.stepsize
         render_viewpoints_kwargs = {
             'model': model,

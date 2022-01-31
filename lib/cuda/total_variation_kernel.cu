@@ -14,7 +14,7 @@ template <typename scalar_t>
 __global__ void total_variation_add_grad_cuda_kernel(
     const scalar_t* __restrict__ param,
     scalar_t* __restrict__ grad,
-    const float weight,
+    const float wx, const float wy, const float wz,
     const size_t sz_i, const size_t sz_j, const size_t sz_k, const size_t N) {
 
   const size_t index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -24,17 +24,17 @@ __global__ void total_variation_add_grad_cuda_kernel(
     const size_t i = index / sz_k / sz_j % sz_i;
 
     float grad_to_add = 0;
-    grad_to_add += (k==0      ? 0 : weight * clamp(param[index]-param[index-1], -1.f, 1.f));
-    grad_to_add += (k==sz_k-1 ? 0 : weight * clamp(param[index]-param[index+1], -1.f, 1.f));
-    grad_to_add += (j==0      ? 0 : weight * clamp(param[index]-param[index-sz_k], -1.f, 1.f));
-    grad_to_add += (j==sz_j-1 ? 0 : weight * clamp(param[index]-param[index+sz_k], -1.f, 1.f));
-    grad_to_add += (i==0      ? 0 : weight * clamp(param[index]-param[index-sz_k*sz_j], -1.f, 1.f));
-    grad_to_add += (i==sz_i-1 ? 0 : weight * clamp(param[index]-param[index+sz_k*sz_j], -1.f, 1.f));
+    grad_to_add += (k==0      ? 0 : wz * clamp(param[index]-param[index-1], -1.f, 1.f));
+    grad_to_add += (k==sz_k-1 ? 0 : wz * clamp(param[index]-param[index+1], -1.f, 1.f));
+    grad_to_add += (j==0      ? 0 : wy * clamp(param[index]-param[index-sz_k], -1.f, 1.f));
+    grad_to_add += (j==sz_j-1 ? 0 : wy * clamp(param[index]-param[index+sz_k], -1.f, 1.f));
+    grad_to_add += (i==0      ? 0 : wz * clamp(param[index]-param[index-sz_k*sz_j], -1.f, 1.f));
+    grad_to_add += (i==sz_i-1 ? 0 : wz * clamp(param[index]-param[index+sz_k*sz_j], -1.f, 1.f));
     grad[index] += grad_to_add;
   }
 }
 
-void total_variation_add_grad_cuda(torch::Tensor param, torch::Tensor grad, float weight) {
+void total_variation_add_grad_cuda(torch::Tensor param, torch::Tensor grad, float wx, float wy, float wz) {
   const size_t N = param.numel();
   const size_t sz_i = param.size(2);
   const size_t sz_j = param.size(3);
@@ -42,13 +42,15 @@ void total_variation_add_grad_cuda(torch::Tensor param, torch::Tensor grad, floa
   const int threads = 256;
   const int blocks = (N + threads - 1) / threads;
 
-  weight = weight / 6 * (max(max(sz_i, sz_j), sz_k) / 256.f);
+  wx /= 6;
+  wy /= 6;
+  wz /= 6;
 
   AT_DISPATCH_FLOATING_TYPES(param.type(), "total_variation_add_grad_cuda", ([&] {
     total_variation_add_grad_cuda_kernel<scalar_t><<<blocks, threads>>>(
         param.data<scalar_t>(),
         grad.data<scalar_t>(),
-        weight,
+        wx, wy, wz,
         sz_i, sz_j, sz_k, N);
   }));
 }
