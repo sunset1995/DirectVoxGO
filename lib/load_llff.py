@@ -83,7 +83,12 @@ def _minify(basedir, factors=[], resolutions=[]):
 def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True, load_depths=False):
 
     poses_arr = np.load(os.path.join(basedir, 'poses_bounds.npy'))
-    poses = poses_arr[:, :-2].reshape([-1, 3, 5]).transpose([1,2,0])
+    if poses_arr.shape[1] == 17:
+        poses = poses_arr[:, :-2].reshape([-1, 3, 5]).transpose([1,2,0])
+    elif poses_arr.shape[1] == 14:
+        poses = poses_arr[:, :-2].reshape([-1, 3, 4]).transpose([1,2,0])
+    else:
+        raise NotImplementedError
     bds = poses_arr[:, -2:].transpose([1,0])
 
     img0 = [os.path.join(basedir, 'images', f) for f in sorted(os.listdir(os.path.join(basedir, 'images'))) \
@@ -120,9 +125,12 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True, lo
     imgfiles = [os.path.join(imgdir, f) for f in sorted(os.listdir(imgdir)) if f.endswith('JPG') or f.endswith('jpg') or f.endswith('png')]
     if poses.shape[-1] != len(imgfiles):
         print( 'Mismatch between imgs {} and poses {} !!!!'.format(len(imgfiles), poses.shape[-1]) )
-        return
+        import sys; sys.exit()
 
     sh = imageio.imread(imgfiles[0]).shape
+    if poses.shape[1] == 4:
+        poses = np.concatenate([poses, np.zeros_like(poses[:,[0]])], 1)
+        poses[2, 4, :] = np.load(os.path.join(basedir, 'hwf_cxcy.npy'))[2]
     poses[:2, 4, :] = np.array(sh[:2]).reshape([2, 1])
     poses[2, 4, :] = poses[2, 4, :] * 1./factor
 
