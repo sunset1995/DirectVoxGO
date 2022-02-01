@@ -11,10 +11,18 @@ from torch_scatter import segment_coo
 
 from torch.utils.cpp_extension import load
 parent_dir = os.path.dirname(os.path.abspath(__file__))
-sources=['cuda/render_utils.cpp', 'cuda/render_utils_kernel.cu']
 render_utils_cuda = load(
         name='render_utils_cuda',
-        sources=[os.path.join(parent_dir, path) for path in sources],
+        sources=[
+            os.path.join(parent_dir, path)
+            for path in ['cuda/render_utils.cpp', 'cuda/render_utils_kernel.cu']],
+        verbose=True)
+
+total_variation_cuda = load(
+        name='total_variation_cuda',
+        sources=[
+            os.path.join(parent_dir, path)
+            for path in ['cuda/total_variation.cpp', 'cuda/total_variation_kernel.cu']],
         verbose=True)
 
 
@@ -211,11 +219,13 @@ class DirectVoxGO(torch.nn.Module):
         print('dvgo: voxel_count_views finish (eps time:', eps_time, 'sec)')
         return count
 
-    def density_total_variation(self):
-        raise NotImplementedError
+    def density_total_variation_add_grad(self, weight):
+        total_variation_cuda.total_variation_add_grad(
+            self.density, self.density.grad, weight)
 
-    def k0_total_variation(self):
-        raise NotImplementedError
+    def k0_total_variation_add_grad(self, weight):
+        total_variation_cuda.total_variation_add_grad(
+            self.k0, self.k0.grad, weight)
 
     def activate_density(self, density, interval=None):
         interval = interval if interval is not None else self.voxel_size_ratio

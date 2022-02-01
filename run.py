@@ -87,7 +87,7 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
         viewdirs = viewdirs.flatten(0,-2)
         render_result_chunks = [
             {k: v for k, v in model(ro, rd, vd, **render_kwargs).items() if k in keys}
-            for ro, rd, vd in zip(rays_o.split(65536, 0), rays_d.split(65536, 0), viewdirs.split(65536, 0))
+            for ro, rd, vd in zip(rays_o.split(8192, 0), rays_d.split(8192, 0), viewdirs.split(8192, 0))
         ]
         render_result = {
             k: torch.cat([ret[k] for ret in render_result_chunks]).reshape(H,W,-1)
@@ -367,11 +367,14 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             rgbper = (render_result['raw_rgb'] - target[render_result['ray_id']]).pow(2).sum(-1)
             rgbper_loss = (rgbper * render_result['weights'].detach()).sum() / len(rays_o)
             loss += cfg_train.weight_rgbper * rgbper_loss
-        if cfg_train.weight_tv_density>0 and global_step>cfg_train.tv_from and global_step%cfg_train.tv_every==0:
-            loss += cfg_train.weight_tv_density * model.density_total_variation()
-        if cfg_train.weight_tv_k0>0 and global_step>cfg_train.tv_from and global_step%cfg_train.tv_every==0:
-            loss += cfg_train.weight_tv_k0 * model.k0_total_variation()
         loss.backward()
+
+        if global_step<cfg_train.tv_before and global_step>cfg_train.tv_after and global_step%cfg_train.tv_every==0:
+            if cfg_train.weight_tv_density>0:
+                model.density_total_variation_add_grad(cfg_train.weight_tv_density / len(target))
+            if cfg_train.weight_tv_k0>0:
+                model.k0_total_variation_add_grad(cfg_train.weight_tv_k0 / len(target))
+
         optimizer.step()
         psnr_lst.append(psnr.item())
 
