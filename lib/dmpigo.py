@@ -139,7 +139,7 @@ class DirectMPIGO(torch.nn.Module):
         ), -1)
         self_alpha = F.max_pool3d(self.activate_density(self.density), kernel_size=3, padding=1, stride=1)[0,0]
         self.mask_cache = MaskCache(
-                path=None, mask=(self_alpha>1e-4),
+                path=None, mask=(self_alpha>self.fast_color_thres),
                 xyz_min=self.xyz_min, xyz_max=self.xyz_max)
 
         print('dmpigo: scale_volume_grid finish')
