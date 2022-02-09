@@ -47,9 +47,10 @@ coarse_train = dict(
     tv_every=1,                   # count total variation loss every tv_every step
     tv_after=0,                   # count total variation loss from tv_from step
     tv_before=0,
+    tv_dense_before=0,
+    weight_tv_z_nf_rate=1.0,
     weight_tv_density=0.0,        # weight of total variation loss of density voxel grid
     weight_tv_k0=0.0,             # weight of total variation loss of color/feature voxel grid
-    weight_tv_z_scale=10.,
     pg_scale=[],                  # checkpoints for progressive scaling
     skip_zero_grad_fields=[],
 )

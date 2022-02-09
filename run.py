@@ -68,7 +68,7 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
         Ks[:, :2, :3] //= render_factor
 
     rgbs = []
-    disps = []
+    depths = []
     psnrs = []
     ssims = []
     lpips_alex = []
@@ -81,7 +81,7 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
         rays_o, rays_d, viewdirs = dvgo.get_rays_of_a_view(
                 H, W, K, c2w, ndc, inverse_y=render_kwargs['inverse_y'],
                 flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y)
-        keys = ['rgb_marched']
+        keys = ['rgb_marched', 'depth']
         rays_o = rays_o.flatten(0,-2)
         rays_d = rays_d.flatten(0,-2)
         viewdirs = viewdirs.flatten(0,-2)
@@ -94,9 +94,10 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
             for k in render_result_chunks[0].keys()
         }
         rgb = render_result['rgb_marched'].cpu().numpy()
+        depth = render_result['depth'].cpu().numpy()
 
         rgbs.append(rgb)
-        #disps.append(disp)
+        depths.append(depth)
         if i==0:
             print('Testing', rgb.shape)
 
@@ -124,10 +125,9 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
             imageio.imwrite(filename, rgb8)
 
     rgbs = np.array(rgbs)
-    #disps = np.array(disps)
-    disps = np.zeros_like(rgbs)
+    depths = np.array(depths)
 
-    return rgbs, disps
+    return rgbs, depths
 
 
 def seed_everything():
@@ -396,9 +396,11 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
 
         if global_step<cfg_train.tv_before and global_step>cfg_train.tv_after and global_step%cfg_train.tv_every==0:
             if cfg_train.weight_tv_density>0:
-                model.density_total_variation_add_grad(cfg_train.weight_tv_density/len(rays_o), cfg_train.weight_tv_z_scale)
+                model.density_total_variation_add_grad(
+                    cfg_train.weight_tv_density/len(rays_o), global_step<cfg_train.tv_dense_before)
             if cfg_train.weight_tv_k0>0:
-                model.k0_total_variation_add_grad(cfg_train.weight_tv_k0/len(rays_o), cfg_train.weight_tv_z_scale)
+                model.k0_total_variation_add_grad(
+                    cfg_train.weight_tv_k0/len(rays_o), global_step<cfg_train.tv_dense_before)
 
         optimizer.step()
         psnr_lst.append(psnr.item())
@@ -567,6 +569,7 @@ if __name__=='__main__':
                 'inverse_y': cfg.data.inverse_y,
                 'flip_x': cfg.data.flip_x,
                 'flip_y': cfg.data.flip_y,
+                'render_depth': True,
             },
         }
 
@@ -574,7 +577,7 @@ if __name__=='__main__':
     if args.render_train:
         testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_train_{ckpt_name}')
         os.makedirs(testsavedir, exist_ok=True)
-        rgbs, disps = render_viewpoints(
+        rgbs, depths = render_viewpoints(
                 render_poses=data_dict['poses'][data_dict['i_train']],
                 HW=data_dict['HW'][data_dict['i_train']],
                 Ks=data_dict['Ks'][data_dict['i_train']],
@@ -583,13 +586,13 @@ if __name__=='__main__':
                 eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
                 **render_viewpoints_kwargs)
         imageio.mimwrite(os.path.join(testsavedir, 'video.rgb.mp4'), utils.to8b(rgbs), fps=30, quality=8)
-        imageio.mimwrite(os.path.join(testsavedir, 'video.disp.mp4'), utils.to8b(disps / np.max(disps)), fps=30, quality=8)
+        imageio.mimwrite(os.path.join(testsavedir, 'video.depth.mp4'), utils.to8b(1 - depths / np.max(depths)), fps=30, quality=8)
 
     # render testset and eval
     if args.render_test:
         testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_test_{ckpt_name}')
         os.makedirs(testsavedir, exist_ok=True)
-        rgbs, disps = render_viewpoints(
+        rgbs, depths = render_viewpoints(
                 render_poses=data_dict['poses'][data_dict['i_test']],
                 HW=data_dict['HW'][data_dict['i_test']],
                 Ks=data_dict['Ks'][data_dict['i_test']],
@@ -598,13 +601,13 @@ if __name__=='__main__':
                 eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
                 **render_viewpoints_kwargs)
         imageio.mimwrite(os.path.join(testsavedir, 'video.rgb.mp4'), utils.to8b(rgbs), fps=30, quality=8)
-        imageio.mimwrite(os.path.join(testsavedir, 'video.disp.mp4'), utils.to8b(disps / np.max(disps)), fps=30, quality=8)
+        imageio.mimwrite(os.path.join(testsavedir, 'video.depth.mp4'), utils.to8b(1 - depths / np.max(depths)), fps=30, quality=8)
 
     # render video
     if args.render_video:
         testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_video_{ckpt_name}')
         os.makedirs(testsavedir, exist_ok=True)
-        rgbs, disps = render_viewpoints(
+        rgbs, depths = render_viewpoints(
                 render_poses=data_dict['render_poses'],
                 HW=data_dict['HW'][data_dict['i_test']][[0]].repeat(len(data_dict['render_poses']), 0),
                 Ks=data_dict['Ks'][data_dict['i_test']][[0]].repeat(len(data_dict['render_poses']), 0),
@@ -612,7 +615,7 @@ if __name__=='__main__':
                 savedir=testsavedir,
                 **render_viewpoints_kwargs)
         imageio.mimwrite(os.path.join(testsavedir, 'video.rgb.mp4'), utils.to8b(rgbs), fps=30, quality=8)
-        imageio.mimwrite(os.path.join(testsavedir, 'video.disp.mp4'), utils.to8b(disps / np.max(disps)), fps=30, quality=8)
+        imageio.mimwrite(os.path.join(testsavedir, 'video.depth.mp4'), utils.to8b(1 - depths / np.max(depths)), fps=30, quality=8)
 
     print('Done')
 

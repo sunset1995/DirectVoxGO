@@ -219,15 +219,15 @@ class DirectVoxGO(torch.nn.Module):
         print('dvgo: voxel_count_views finish (eps time:', eps_time, 'sec)')
         return count
 
-    def density_total_variation_add_grad(self, weight):
+    def density_total_variation_add_grad(self, weight, dense_mode):
         weight = weight * self.world_size.max() / 128
         total_variation_cuda.total_variation_add_grad(
-            self.density, self.density.grad, weight, weight, weight)
+            self.density, self.density.grad, weight, weight, weight, dense_mode)
 
-    def k0_total_variation_add_grad(self, weight):
+    def k0_total_variation_add_grad(self, weight, dense_mode):
         weight = weight * self.world_size.max() / 128
         total_variation_cuda.total_variation_add_grad(
-            self.k0, self.k0.grad, weight, weight, weight)
+            self.k0, self.k0.grad, weight, weight, weight, dense_mode)
 
     def activate_density(self, density, interval=None):
         interval = interval if interval is not None else self.voxel_size_ratio
@@ -375,16 +375,11 @@ class DirectVoxGO(torch.nn.Module):
         if render_kwargs.get('render_depth', False):
             with torch.no_grad():
                 depth = segment_coo(
-                        src=(weights/weights.sum(-1,keepdim=True).clamp_min(1e-10) * interpx[mask]),
+                        src=(weights * step_id),
                         index=ray_id,
                         out=torch.zeros([N]),
                         reduce='sum')
-                depth[depth<interpx[...,0]] = render_kwargs['far']
-                disp = 1 / depth
-            ret_dict.update({
-                'depth': depth,
-                'disp': disp,
-            })
+            ret_dict.update({'depth': depth})
 
         return ret_dict
 

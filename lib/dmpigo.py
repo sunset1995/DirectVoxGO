@@ -21,7 +21,7 @@ class DirectMPIGO(torch.nn.Module):
                  fast_color_thres=0,
                  rgbnet_dim=0,
                  rgbnet_depth=3, rgbnet_width=128,
-                 viewbase_pe=4,
+                 viewbase_pe=0,
                  **kwargs):
         super(DirectMPIGO, self).__init__()
         self.register_buffer('xyz_min', torch.Tensor(xyz_min))
@@ -35,12 +35,13 @@ class DirectMPIGO(torch.nn.Module):
         # init density voxel grid
         self.density = torch.nn.Parameter(torch.zeros([1, 1, *self.world_size]))
         with torch.no_grad():
-            g = np.full([mpi_depth], 0.9/mpi_depth)
+            g = np.full([mpi_depth], 1./mpi_depth - 1e-6)
             p = [1-g[0]]
             for i in range(1, len(g)):
                 p.append((1-g[:i+1].sum())/(1-g[:i].sum()))
             for i in range(len(p)):
                 self.density[..., i].fill_(np.log(p[i] ** (-1/self.voxel_size_ratio) - 1))
+            self.density[..., -1].fill_(10)
 
         # init color representation
         # feature voxel grid + shallow MLP  (fine stage)
@@ -143,17 +144,17 @@ class DirectMPIGO(torch.nn.Module):
 
         print('dmpigo: scale_volume_grid finish')
 
-    def density_total_variation_add_grad(self, weight, z_rescale):
+    def density_total_variation_add_grad(self, weight, dense_mode):
         wxy = weight * self.world_size[:2].max() / 128
-        wz = weight * z_rescale * self.mpi_depth / 128
+        wz = weight * self.mpi_depth / 128
         total_variation_cuda.total_variation_add_grad(
-            self.density, self.density.grad, wxy, wxy, wz)
+            self.density, self.density.grad, wxy, wxy, wz, dense_mode)
 
-    def k0_total_variation_add_grad(self, weight, z_rescale):
+    def k0_total_variation_add_grad(self, weight, dense_mode):
         wxy = weight * self.world_size[:2].max() / 128
-        wz = weight * z_rescale * self.mpi_depth / 128
+        wz = weight * self.mpi_depth / 128
         total_variation_cuda.total_variation_add_grad(
-            self.k0, self.k0.grad, wxy, wxy, wz)
+            self.k0, self.k0.grad, wxy, wxy, wz, dense_mode)
 
     def activate_density(self, density, interval=None):
         interval = interval if interval is not None else self.voxel_size_ratio
@@ -273,16 +274,11 @@ class DirectMPIGO(torch.nn.Module):
         if render_kwargs.get('render_depth', False):
             with torch.no_grad():
                 depth = segment_coo(
-                        src=(weights/weights.sum(-1,keepdim=True).clamp_min(1e-10) * interpx[mask]),
+                        src=(weights * step_id),
                         index=ray_id,
                         out=torch.zeros([N]),
                         reduce='sum')
-                depth[depth<interpx[...,0]] = render_kwargs['far']
-                disp = 1 / depth
-            ret_dict.update({
-                'depth': depth,
-                'disp': disp,
-            })
+            ret_dict.update({'depth': depth})
 
         return ret_dict
 

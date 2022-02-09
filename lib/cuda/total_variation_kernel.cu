@@ -10,15 +10,15 @@ __device__ __forceinline__ scalar_t clamp(const scalar_t v, const bound_t lo, co
   return min(max(v, lo), hi);
 }
 
-template <typename scalar_t>
+template <typename scalar_t, bool dense_mode>
 __global__ void total_variation_add_grad_cuda_kernel(
     const scalar_t* __restrict__ param,
     scalar_t* __restrict__ grad,
-    const float wx, const float wy, const float wz,
+    float wx, float wy, float wz,
     const size_t sz_i, const size_t sz_j, const size_t sz_k, const size_t N) {
 
   const size_t index = blockIdx.x * blockDim.x + threadIdx.x;
-  if(index<N && grad[index]!=0) {
+  if(index<N && (dense_mode || grad[index]!=0)) {
     const size_t k = index % sz_k;
     const size_t j = index / sz_k % sz_j;
     const size_t i = index / sz_k / sz_j % sz_i;
@@ -34,7 +34,7 @@ __global__ void total_variation_add_grad_cuda_kernel(
   }
 }
 
-void total_variation_add_grad_cuda(torch::Tensor param, torch::Tensor grad, float wx, float wy, float wz) {
+void total_variation_add_grad_cuda(torch::Tensor param, torch::Tensor grad, float wx, float wy, float wz, bool dense_mode) {
   const size_t N = param.numel();
   const size_t sz_i = param.size(2);
   const size_t sz_j = param.size(3);
@@ -46,12 +46,23 @@ void total_variation_add_grad_cuda(torch::Tensor param, torch::Tensor grad, floa
   wy /= 6;
   wz /= 6;
 
-  AT_DISPATCH_FLOATING_TYPES(param.type(), "total_variation_add_grad_cuda", ([&] {
-    total_variation_add_grad_cuda_kernel<scalar_t><<<blocks, threads>>>(
-        param.data<scalar_t>(),
-        grad.data<scalar_t>(),
-        wx, wy, wz,
-        sz_i, sz_j, sz_k, N);
-  }));
+  if(dense_mode) {
+    AT_DISPATCH_FLOATING_TYPES(param.type(), "total_variation_add_grad_cuda", ([&] {
+      total_variation_add_grad_cuda_kernel<scalar_t,true><<<blocks, threads>>>(
+          param.data<scalar_t>(),
+          grad.data<scalar_t>(),
+          wx, wy, wz,
+          sz_i, sz_j, sz_k, N);
+    }));
+  }
+  else {
+     AT_DISPATCH_FLOATING_TYPES(param.type(), "total_variation_add_grad_cuda", ([&] {
+      total_variation_add_grad_cuda_kernel<scalar_t,false><<<blocks, threads>>>(
+          param.data<scalar_t>(),
+          grad.data<scalar_t>(),
+          wx, wy, wz,
+          sz_i, sz_j, sz_k, N);
+    }));
+  }
 }
 
