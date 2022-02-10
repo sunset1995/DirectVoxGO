@@ -1,6 +1,6 @@
 # DirectVoxGO
 
-DirectVoxGO (Direct Voxel Grid Optimization, see our [paper](https://arxiv.org/abs/2111.11215)) reconstructs a scene representation from a set of calibrated images capturing the scene. The newest version have improved speed by **1.8\~3.5x** and supported forward-facing scenes comparing to the initial publication.
+DirectVoxGO (Direct Voxel Grid Optimization, see our [paper](https://arxiv.org/abs/2111.11215)) reconstructs a scene representation from a set of calibrated images capturing the scene. The current version have improved speed by 1.8\~3.5x and supported forward-facing scenes comparing to the initial publication.
 - **NeRF-comparable quality** for synthesizing novel views of inward-bounded scene.
 - **Super-fast convergence**: Our **`5 mins/scene`** vs. NeRF's `10~20+ hrs/scene`.
 - **No cross-scene pre-training required**: We optimize each scene from scratch.
@@ -14,7 +14,7 @@ https://user-images.githubusercontent.com/2712505/153380311-19d6c3a1-9130-489a-a
 https://user-images.githubusercontent.com/2712505/153380197-991d1689-6418-499c-a192-d757f9a64b64.mp4
 
 ### Update
-- `2022.02.10`: **Extending for forward-facining scene** (see [report](IMPROVING_LOG.md)). PSNR is slightly worse than NeRF (Our `25.71` vs NeRF's `26.50`), but our training time is `5.5 minutes` which is much faster than NeRF's many hours.
+- `2022.02.10`: **Extending for forward-facining scene** (see [report](IMPROVING_LOG.md)). Our PSNR is not as good as NeRF's (`25.71` vs. `26.50`), but our training time is `5.5 minutes` which is much faster than NeRF's many hours.
 - `2022.01.23`: **Improving training speed by 1.8\~3.5x** (see [report](IMPROVING_LOG.md)). Some intermediate steps are re-implemented in cuda but not fully fused---flexible but sacrficing speed. *Telsa V100*, *RTX 2080 Ti*, and *RTX 1080 Ti* are tested.
 - `2021.11.23`: **Support CO3D dataset.**
 - `2021.11.23`: **Initial release.**
