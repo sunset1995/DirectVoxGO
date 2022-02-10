@@ -14,8 +14,8 @@ https://user-images.githubusercontent.com/2712505/153380311-19d6c3a1-9130-489a-a
 https://user-images.githubusercontent.com/2712505/153380197-991d1689-6418-499c-a192-d757f9a64b64.mp4
 
 ### Update
-- `2022.02.10`: **Extending for forward-facining scene** (see [report](IMPROVING_LOG.md)). Our PSNR is not as good as NeRF's (`25.71` vs. `26.50`), but our training time is `5.5 minutes` which is much faster than NeRF's many hours.
-- `2022.01.23`: **Improving training speed by 1.8\~3.5x** (see [report](IMPROVING_LOG.md)). Some intermediate steps are re-implemented in cuda but not fully fused---flexible but sacrficing speed. *Telsa V100*, *RTX 2080 Ti*, and *RTX 1080 Ti* are tested.
+- `2022.02.10`: **Extending for forward-facining scene** (see [report](IMPROVING_LOG.md#extend-for-forward-facing-scene)). Our PSNR is not as good as NeRF's (`25.71` vs. `26.50`), but our training time is `5.5 minutes` which is much faster than NeRF's many hours.
+- `2022.01.23`: **Improving training speed by 1.8\~3.5x** (see [report](IMPROVING_LOG.md#custom-cuda-implementation-for-efficiency)). Some intermediate steps are re-implemented in cuda but not fully fused---flexible but sacrficing speed. *Telsa V100*, *RTX 2080 Ti*, and *RTX 1080 Ti* are tested.
 - `2021.11.23`: **Support CO3D dataset.**
 - `2021.11.23`: **Initial release.**
 
