@@ -1,26 +1,27 @@
 # DirectVoxGO
 
-DirectVoxGO (Direct Voxel Grid Optimization, see our [paper](https://arxiv.org/abs/2111.11215)) reconstructs a scene representation from a set of calibrated images capturing the scene.
-- **NeRF-comparable quality** for synthesizing novel views from our scene representation.
-- **Super-fast convergence**: Our **`15 mins/scene`** vs. NeRF's `10~20+ hrs/scene`. The newest version further improved speed by **1.8\~3.5**x. Still working on improving it...
+DirectVoxGO (Direct Voxel Grid Optimization, see our [paper](https://arxiv.org/abs/2111.11215)) reconstructs a scene representation from a set of calibrated images capturing the scene. The newest version have improved speed by **1.8\~3.5x** and supported forward-facing scenes comparing to the initial publication.
+- **NeRF-comparable quality** for synthesizing novel views of inward-bounded scene.
+- **Super-fast convergence**: Our **`5 mins/scene`** vs. NeRF's `10~20+ hrs/scene`.
 - **No cross-scene pre-training required**: We optimize each scene from scratch.
 - **Better rendering speed**: Our **`0.36~0.07 secs`** vs. NeRF's `29 secs` to synthesize a `800x800` images.
+- The newly implemented cuda extension is built just-in-time by pytorch at the first time you run the code.
 
-The newly implemented cuda extension is built just-in-time by pytorch at the first time you run the code.
+Below run-times (*mm:ss*) of our optimization progress are measured on a machine with a single RTX 2080 Ti GPU.
 
-Below run-times (*mm:ss*) of our optimization progress are measured on a machine with a single RTX 2080 Ti GPU. The run-times are old, the training speed is improved in the newer version.
+https://user-images.githubusercontent.com/2712505/153380311-19d6c3a1-9130-489a-af16-ad36c78f10a9.mp4
 
-https://user-images.githubusercontent.com/2712505/142961346-82cd84f5-d46e-4cfc-bce5-2bbb78f16272.mp4
+https://user-images.githubusercontent.com/2712505/153380197-991d1689-6418-499c-a192-d757f9a64b64.mp4
 
 ### Update
-- 2022.01.23: Improving training speed by **1.8\~3.5**x (see [report](IMPROVING_LOG.md)). Some intermediate steps are re-implemented in cuda but not fully fused---flexible but sacrficing speed. *Telsa V100*, *RTX 2080 Ti*, and *RTX 1080 Ti* are tested.
-- 2021.11.23: Support CO3D dataset.
-- 2021.11.23: Initial release.
+- `2022.02.10`: **Extending for forward-facining scene** (see [report](IMPROVING_LOG.md)). PSNR is slightly worse than NeRF (Our `25.71` vs NeRF's `26.50`), but our training time is `5.5 minutes` which is much faster than NeRF's many hours.
+- `2022.01.23`: **Improving training speed by 1.8\~3.5x** (see [report](IMPROVING_LOG.md)). Some intermediate steps are re-implemented in cuda but not fully fused---flexible but sacrficing speed. *Telsa V100*, *RTX 2080 Ti*, and *RTX 1080 Ti* are tested.
+- `2021.11.23`: **Support CO3D dataset.**
+- `2021.11.23`: **Initial release.**
 
 ### Next todo
-- Implement total variation loss in cuda.
 - Sparse voxel structure.
-- Extend to more scenario (forward-facing, unbounded 360).
+- Extend to inward-unbounded scenes.
 
 ### Installation
 ```
@@ -78,12 +79,15 @@ Pytorch installation is machine dependent, please install the correct version fo
     │       └── pose
     │           └── [0|1|2]_*.txt
     │
-    ├── deepvoxels     # Link: https://drive.google.com/drive/folders/1ScsRlnzy9Bd_n-xw83SP-0t548v63mPH
+    ├── deepvoxels         # Link: https://drive.google.com/drive/folders/1ScsRlnzy9Bd_n-xw83SP-0t548v63mPH
     │   └── [train|validation|test]
     │       └── [armchair|cube|greek|vase]
     │           ├── intrinsics.txt
     │           ├── rgb/*.png
     │           └── pose/*.txt
+    │
+    ├── nerf_llff_data     # Link: https://drive.google.com/drive/folders/128yBriW1IG_3NJ5Rp7APSTZsJqdJdfc1
+    │   └── [fern|flower|fortress|horns|leaves|orchids|room|trex]
     │
     └── co3d               # Link: https://github.com/facebookresearch/co3d
         └── [donut|teddybear|umbrella|...]
@@ -105,6 +109,9 @@ We use the datasets organized by [NeRF](https://github.com/bmild/nerf), [NSVF](h
 - [DeepVoxels dataset](https://drive.google.com/open?id=1ScsRlnzy9Bd_n-xw83SP-0t548v63mPH) (manually extract the `synthetic_scenes.zip` to `data/deepvoxels/`)
 
 Download all our trained models and rendered test views at [this link to our logs](https://drive.google.com/drive/folders/1Zn2adjQh82TivpxG-65UMCCVBmxRYDXe?usp=sharing).
+
+### LLFF dataset
+We use the LLFF dataset organized by NeRF. Download link: [nerf_llff_data](https://drive.google.com/drive/folders/128yBriW1IG_3NJ5Rp7APSTZsJqdJdfc1).
 
 ### CO3D dataset
 We also support the recent [Common Objects In 3D](https://github.com/facebookresearch/co3d) dataset.
