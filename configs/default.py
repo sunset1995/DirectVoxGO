@@ -23,8 +23,8 @@ data = dict(
     ndc=False,                    # use ndc coordinate (only for forward-facing; not support yet)
     spherify=False,               # inward-facing
     factor=4,                     # [TODO]
-    width=None,
-    height=None,
+    width=None,                   # enforce image width
+    height=None,                  # enforce image height
     llffhold=8,                   # testsplit
     load_depths=False,            # load depth
 )
@@ -32,7 +32,7 @@ data = dict(
 ''' Template of training options
 '''
 coarse_train = dict(
-    N_iters=10000,                # number of optimization steps
+    N_iters=5000,                 # number of optimization steps
     N_rand=8192,                  # batch size (number of random rays per optimization step)
     lrate_density=1e-1,           # lr of density voxel grid
     lrate_k0=1e-1,                # lr of color/feature voxel grid
@@ -46,13 +46,12 @@ coarse_train = dict(
     weight_rgbper=0.1,            # weight of per-point rgb loss
     tv_every=1,                   # count total variation loss every tv_every step
     tv_after=0,                   # count total variation loss from tv_from step
-    tv_before=0,
-    tv_dense_before=0,
-    weight_tv_z_nf_rate=1.0,
+    tv_before=0,                  # count total variation before the given number of iterations
+    tv_dense_before=0,            # count total variation densely before the given number of iterations
     weight_tv_density=0.0,        # weight of total variation loss of density voxel grid
     weight_tv_k0=0.0,             # weight of total variation loss of color/feature voxel grid
     pg_scale=[],                  # checkpoints for progressive scaling
-    skip_zero_grad_fields=[],
+    skip_zero_grad_fields=[],     # the variable name to skip optimizing parameters w/ zero grad in each iteration
 )
 
 fine_train = deepcopy(coarse_train)
@@ -62,17 +61,16 @@ fine_train.update(dict(
     ray_sampler='in_maskcache',
     weight_entropy_last=0.001,
     weight_rgbper=0.01,
-    pg_scale=[1000, 2000, 3000],
+    pg_scale=[1000, 2000, 3000, 4000],
     skip_zero_grad_fields=['density', 'k0'],
 ))
 
 ''' Template of model and rendering options
 '''
 coarse_model_and_render = dict(
-    atlas_mode=False,
-    mpi_depth=64,
     num_voxels=1024000,           # expected number of voxel
     num_voxels_base=1024000,      # to rescale delta distance
+    mpi_depth=128,                # the number of planes in Multiplane Image (work when ndc=True)
     nearest=False,                # nearest interpolation
     pre_act_density=False,        # pre-activated trilinear interpolation
     in_act_density=False,         # in-activated trilinear interpolation
