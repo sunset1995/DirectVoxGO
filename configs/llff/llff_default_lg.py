@@ -24,12 +24,16 @@ fine_train = dict(
     weight_tv_k0=1e-6,
 )
 
+_mpi_depth = 256
+_stepsize = 0.5
+
 fine_model_and_render = dict(
-    num_voxels=256**3,
-    mpi_depth=128,
-    rgbnet_dim=9,
-    rgbnet_width=64,
+    num_voxels=384*384*_mpi_depth,
+    mpi_depth=_mpi_depth,
+    stepsize=_stepsize,
+    rgbnet_dim=16,
+    rgbnet_width=128,
     world_bound_scale=1,
-    fast_color_thres=1e-3,
+    fast_color_thres=_stepsize/_mpi_depth/5,
 )
 
