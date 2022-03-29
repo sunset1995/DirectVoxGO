@@ -31,12 +31,12 @@ git clone git@github.com:sunset1995/DirectVoxGO.git
 cd DirectVoxGO
 pip install -r requirements.txt
 ```
-Pytorch installation is machine dependent, please install the correct version for your machine. The tested version is pytorch 1.8.1 with python 3.7.4.
+[Pytorch](https://pytorch.org/) and [torch_scatter](https://github.com/rusty1s/pytorch_scatter) installation is machine dependent, please install the correct version for your machine.
 
 <details>
   <summary> Dependencies (click to expand) </summary>
 
-  - `PyTorch`, `numpy`: main computation.
+  - `PyTorch`, `numpy`, `torch_scatter`: main computation.
   - `scipy`, `lpips`: SSIM and LPIPS evaluation.
   - `tqdm`: progress bar.
   - `mmcv`: config system.
