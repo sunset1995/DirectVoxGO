@@ -32,6 +32,7 @@ def pose_spherical(theta, phi, radius):
     c2w = rot_phi(phi/180.*np.pi) @ c2w
     c2w = rot_theta(theta/180.*np.pi) @ c2w
     c2w = torch.Tensor(np.array([[-1,0,0,0],[0,0,1,0],[0,1,0,0],[0,0,0,1]])) @ c2w
+    c2w[:,[1,2]] *= -1
     return c2w
 
 
@@ -55,7 +56,8 @@ def load_nsvf_data(basedir):
     with open(os.path.join(basedir, 'intrinsics.txt')) as f:
         focal = float(f.readline().split()[0])
 
-    render_poses = torch.stack([pose_spherical(angle, -30.0, 4.0) for angle in np.linspace(-180,180,40+1)[:-1]], 0)
+    R = np.sqrt((poses[...,:3,3]**2).sum(-1)).mean()
+    render_poses = torch.stack([pose_spherical(angle, -30.0, R) for angle in np.linspace(-180,180,200+1)[:-1]], 0)
 
     return imgs, poses, render_poses, [H, W, focal], i_split
 
