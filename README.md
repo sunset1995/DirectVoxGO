@@ -21,10 +21,6 @@ See the [report](IMPROVING_LOG.md) for detail of below update:
 - `2021.11.23`: **Support CO3D dataset.**
 - `2021.11.23`: **Initial release.**
 
-### Next todo
-- Sparse voxel structure.
-- Extend to inward-unbounded scenes.
-
 ### Installation
 ```
 git clone git@github.com:sunset1995/DirectVoxGO.git
