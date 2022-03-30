@@ -70,6 +70,8 @@ fine_train.update(dict(
 coarse_model_and_render = dict(
     num_voxels=1024000,           # expected number of voxel
     num_voxels_base=1024000,      # to rescale delta distance
+    density_type='DenseGrid',     # DenseGrid
+    k0_type='DenseGrid',          # DenseGrid
     mpi_depth=128,                # the number of planes in Multiplane Image (work when ndc=True)
     nearest=False,                # nearest interpolation
     pre_act_density=False,        # pre-activated trilinear interpolation

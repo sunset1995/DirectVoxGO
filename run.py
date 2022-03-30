@@ -188,12 +188,12 @@ def compute_bbox_by_coarse_geo(model_class, model_path, thres):
     eps_time = time.time()
     model = utils.load_model(model_class, model_path)
     interp = torch.stack(torch.meshgrid(
-        torch.linspace(0, 1, model.density.shape[2]),
-        torch.linspace(0, 1, model.density.shape[3]),
-        torch.linspace(0, 1, model.density.shape[4]),
+        torch.linspace(0, 1, model.world_size[0]),
+        torch.linspace(0, 1, model.world_size[1]),
+        torch.linspace(0, 1, model.world_size[2]),
     ), -1)
     dense_xyz = model.xyz_min * (1-interp) + model.xyz_max * interp
-    density = model.grid_sampler(dense_xyz, model.density)
+    density = model.density(dense_xyz)
     alpha = model.activate_density(density)
     mask = (alpha > thres)
     active_xyz = dense_xyz[mask]
@@ -324,8 +324,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
                     stepsize=cfg_model.stepsize, downrate=cfg_train.pervoxel_lr_downrate,
                     irregular_shape=data_dict['irregular_shape'])
             optimizer.set_pervoxel_lr(cnt)
-            with torch.no_grad():
-                model.density[cnt <= 2] = -100
+            model.mask_cache.mask[cnt.squeeze() <= 2] = False
         per_voxel_init()
 
     # GOGO
@@ -337,7 +336,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
 
         # renew occupancy grid
         if model.mask_cache is not None and (global_step + 500) % 1000 == 0:
-            self_alpha = F.max_pool3d(model.activate_density(model.density), kernel_size=3, padding=1, stride=1)[0,0]
+            self_alpha = F.max_pool3d(model.activate_density(model.density.get_dense_grid()), kernel_size=3, padding=1, stride=1)[0,0]
             model.mask_cache.mask &= (self_alpha > model.fast_color_thres)
 
         # progress scaling checkpoint
@@ -351,7 +350,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             else:
                 raise NotImplementedError
             optimizer = utils.create_optimizer_or_freeze_model(model, cfg_train, global_step=0)
-            model.density.data.sub_(1)
+            model.act_shift -= 1
 
         # random sample rays
         if cfg_train.ray_sampler in ['flatten', 'in_maskcache']:
