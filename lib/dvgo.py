@@ -32,9 +32,10 @@ class DirectVoxGO(torch.nn.Module):
     def __init__(self, xyz_min, xyz_max,
                  num_voxels=0, num_voxels_base=0,
                  alpha_init=None,
-                 mask_cache_path=None, mask_cache_thres=1e-3,
+                 mask_cache_path=None, mask_cache_thres=1e-3, mask_cache_world_size=None,
                  fast_color_thres=0,
                  density_type='DenseGrid', k0_type='DenseGrid',
+                 density_config={}, k0_config={},
                  rgbnet_dim=0, rgbnet_direct=False, rgbnet_full_implicit=False,
                  rgbnet_depth=3, rgbnet_width=128,
                  viewbase_pe=4,
@@ -57,9 +58,12 @@ class DirectVoxGO(torch.nn.Module):
         self._set_grid_resolution(num_voxels)
 
         # init density voxel grid
+        self.density_type = density_type
+        self.density_config = density_config
         self.density = grid.create_grid(
                 density_type, channels=1, world_size=self.world_size,
-                xyz_min=self.xyz_min, xyz_max=self.xyz_max)
+                xyz_min=self.xyz_min, xyz_max=self.xyz_max,
+                config=self.density_config)
 
         # init color representation
         self.rgbnet_kwargs = {
@@ -68,13 +72,16 @@ class DirectVoxGO(torch.nn.Module):
             'rgbnet_depth': rgbnet_depth, 'rgbnet_width': rgbnet_width,
             'viewbase_pe': viewbase_pe,
         }
+        self.k0_type = k0_type
+        self.k0_config = k0_config
         self.rgbnet_full_implicit = rgbnet_full_implicit
         if rgbnet_dim <= 0:
             # color voxel grid  (coarse stage)
             self.k0_dim = 3
             self.k0 = grid.create_grid(
                 k0_type, channels=self.k0_dim, world_size=self.world_size,
-                xyz_min=self.xyz_min, xyz_max=self.xyz_max)
+                xyz_min=self.xyz_min, xyz_max=self.xyz_max,
+                config=self.k0_config)
             self.rgbnet = None
         else:
             # feature voxel grid + shallow MLP  (fine stage)
@@ -84,7 +91,8 @@ class DirectVoxGO(torch.nn.Module):
                 self.k0_dim = rgbnet_dim
             self.k0 = grid.create_grid(
                     k0_type, channels=self.k0_dim, world_size=self.world_size,
-                    xyz_min=self.xyz_min, xyz_max=self.xyz_max)
+                    xyz_min=self.xyz_min, xyz_max=self.xyz_max,
+                    config=self.k0_config)
             self.rgbnet_direct = rgbnet_direct
             self.register_buffer('viewfreq', torch.FloatTensor([(2**i) for i in range(viewbase_pe)]))
             dim0 = (3+3*viewbase_pe*2)
@@ -110,18 +118,20 @@ class DirectVoxGO(torch.nn.Module):
         # Re-implement as occupancy grid (2021/1/31)
         self.mask_cache_path = mask_cache_path
         self.mask_cache_thres = mask_cache_thres
+        if mask_cache_world_size is None:
+            mask_cache_world_size = self.world_size
         if mask_cache_path is not None and mask_cache_path:
             mask_cache = grid.MaskGrid(
                     path=mask_cache_path,
                     mask_cache_thres=mask_cache_thres).to(self.xyz_min.device)
             self_grid_xyz = torch.stack(torch.meshgrid(
-                torch.linspace(self.xyz_min[0], self.xyz_max[0], self.world_size[0]),
-                torch.linspace(self.xyz_min[1], self.xyz_max[1], self.world_size[1]),
-                torch.linspace(self.xyz_min[2], self.xyz_max[2], self.world_size[2]),
+                torch.linspace(self.xyz_min[0], self.xyz_max[0], mask_cache_world_size[0]),
+                torch.linspace(self.xyz_min[1], self.xyz_max[1], mask_cache_world_size[1]),
+                torch.linspace(self.xyz_min[2], self.xyz_max[2], mask_cache_world_size[2]),
             ), -1)
             mask = mask_cache(self_grid_xyz)
         else:
-            mask = torch.ones(list(self.world_size), dtype=torch.bool)
+            mask = torch.ones(list(mask_cache_world_size), dtype=torch.bool)
         self.mask_cache = grid.MaskGrid(
                 path=None, mask=mask,
                 xyz_min=self.xyz_min, xyz_max=self.xyz_max)
@@ -147,7 +157,12 @@ class DirectVoxGO(torch.nn.Module):
             'voxel_size_ratio': self.voxel_size_ratio,
             'mask_cache_path': self.mask_cache_path,
             'mask_cache_thres': self.mask_cache_thres,
+            'mask_cache_world_size': list(self.mask_cache.mask.shape),
             'fast_color_thres': self.fast_color_thres,
+            'density_type': self.density_type,
+            'k0_type': self.k0_type,
+            'density_config': self.density_config,
+            'k0_config': self.k0_config,
             **self.rgbnet_kwargs,
         }
 
@@ -177,20 +192,33 @@ class DirectVoxGO(torch.nn.Module):
         self.density.scale_volume_grid(self.world_size)
         self.k0.scale_volume_grid(self.world_size)
 
-        mask_cache = grid.MaskGrid(
-                path=self.mask_cache_path,
-                mask_cache_thres=self.mask_cache_thres).to(self.xyz_min.device)
-        self_grid_xyz = torch.stack(torch.meshgrid(
-            torch.linspace(self.xyz_min[0], self.xyz_max[0], self.world_size[0]),
-            torch.linspace(self.xyz_min[1], self.xyz_max[1], self.world_size[1]),
-            torch.linspace(self.xyz_min[2], self.xyz_max[2], self.world_size[2]),
-        ), -1)
-        self_alpha = F.max_pool3d(self.activate_density(self.density.get_dense_grid()), kernel_size=3, padding=1, stride=1)[0,0]
-        self.mask_cache = grid.MaskGrid(
-                path=None, mask=mask_cache(self_grid_xyz) & (self_alpha>self.fast_color_thres),
-                xyz_min=self.xyz_min, xyz_max=self.xyz_max)
+        if np.prod(list(self.world_size)) <= 256**3:
+            mask_cache = grid.MaskGrid(
+                    path=self.mask_cache_path,
+                    mask_cache_thres=self.mask_cache_thres).to(self.xyz_min.device)
+            self_grid_xyz = torch.stack(torch.meshgrid(
+                torch.linspace(self.xyz_min[0], self.xyz_max[0], self.world_size[0]),
+                torch.linspace(self.xyz_min[1], self.xyz_max[1], self.world_size[1]),
+                torch.linspace(self.xyz_min[2], self.xyz_max[2], self.world_size[2]),
+            ), -1)
+            self_alpha = F.max_pool3d(self.activate_density(self.density.get_dense_grid()), kernel_size=3, padding=1, stride=1)[0,0]
+            self.mask_cache = grid.MaskGrid(
+                    path=None, mask=mask_cache(self_grid_xyz) & (self_alpha>self.fast_color_thres),
+                    xyz_min=self.xyz_min, xyz_max=self.xyz_max)
 
         print('dvgo: scale_volume_grid finish')
+
+    @torch.no_grad()
+    def update_occupancy_cache(self):
+        cache_grid_xyz = torch.stack(torch.meshgrid(
+            torch.linspace(self.xyz_min[0], self.xyz_max[0], self.mask_cache.mask.shape[0]),
+            torch.linspace(self.xyz_min[1], self.xyz_max[1], self.mask_cache.mask.shape[1]),
+            torch.linspace(self.xyz_min[2], self.xyz_max[2], self.mask_cache.mask.shape[2]),
+        ), -1)
+        cache_grid_density = self.density(cache_grid_xyz)[None,None]
+        cache_grid_alpha = self.activate_density(cache_grid_density)
+        cache_grid_alpha = F.max_pool3d(cache_grid_alpha, kernel_size=3, padding=1, stride=1)[0,0]
+        self.mask_cache.mask &= (cache_grid_alpha > self.fast_color_thres)
 
     def voxel_count_views(self, rays_o_tr, rays_d_tr, imsz, near, far, stepsize, downrate=1, irregular_shape=False):
         print('dvgo: voxel_count_views start')
