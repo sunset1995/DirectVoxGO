@@ -16,6 +16,13 @@ render_utils_cuda = load(
             for path in ['cuda/render_utils.cpp', 'cuda/render_utils_kernel.cu']],
         verbose=True)
 
+total_variation_cuda = load(
+        name='total_variation_cuda',
+        sources=[
+            os.path.join(parent_dir, path)
+            for path in ['cuda/total_variation.cpp', 'cuda/total_variation_kernel.cu']],
+        verbose=True)
+
 
 def create_grid(type, **kwargs):
     if type == 'DenseGrid':
@@ -57,8 +64,18 @@ class DenseGrid(nn.Module):
             self.grid = nn.Parameter(
                 F.interpolate(self.grid.data, size=tuple(new_world_size), mode='trilinear', align_corners=True))
 
+    def total_variation_add_grad(self, wx, wy, wz, dense_mode):
+        '''Add gradients by total variation loss in-place'''
+        total_variation_cuda.total_variation_add_grad(
+            self.grid, self.grid.grad, wx, wy, wz, dense_mode)
+
     def get_dense_grid(self):
         return self.grid
+
+    @torch.no_grad()
+    def __isub__(self, val):
+        self.grid.data -= val
+        return self
 
     def extra_repr(self):
         return f'channels={self.channels}, world_size={self.world_size.tolist()}'
@@ -72,20 +89,20 @@ class TensoRFGrid(nn.Module):
         super(TensoRFGrid, self).__init__()
         self.channels = channels
         self.world_size = world_size
-        self.n_comp = config['n_comp']
-        assert self.n_comp > 1
+        self.config = config
         self.register_buffer('xyz_min', torch.Tensor(xyz_min))
         self.register_buffer('xyz_max', torch.Tensor(xyz_max))
         X, Y, Z = world_size
         R = config['n_comp']
-        self.xy_plane = nn.Parameter(torch.randn([1, R, X, Y]) * 0.1)
+        Rxy = config.get('n_comp_xy', R)
+        self.xy_plane = nn.Parameter(torch.randn([1, Rxy, X, Y]) * 0.1)
         self.xz_plane = nn.Parameter(torch.randn([1, R, X, Z]) * 0.1)
         self.yz_plane = nn.Parameter(torch.randn([1, R, Y, Z]) * 0.1)
         self.x_vec = nn.Parameter(torch.randn([1, R, X, 1]) * 0.1)
         self.y_vec = nn.Parameter(torch.randn([1, R, Y, 1]) * 0.1)
-        self.z_vec = nn.Parameter(torch.randn([1, R, Z, 1]) * 0.1)
+        self.z_vec = nn.Parameter(torch.randn([1, Rxy, Z, 1]) * 0.1)
         if self.channels > 1:
-            self.f_vec = nn.Parameter(torch.ones([3*R, channels]))
+            self.f_vec = nn.Parameter(torch.ones([R+R+Rxy, channels]))
             nn.init.kaiming_uniform_(self.f_vec, a=np.sqrt(5))
 
     def forward(self, xyz):
@@ -119,6 +136,20 @@ class TensoRFGrid(nn.Module):
         self.y_vec = nn.Parameter(F.interpolate(self.y_vec.data, size=[Y,1], mode='bilinear', align_corners=True))
         self.z_vec = nn.Parameter(F.interpolate(self.z_vec.data, size=[Z,1], mode='bilinear', align_corners=True))
 
+    def total_variation_add_grad(self, wx, wy, wz, dense_mode):
+        '''Add gradients by total variation loss in-place'''
+        loss = wx * F.smooth_l1_loss(self.xy_plane[:,:,1:], self.xy_plane[:,:,:-1], reduction='sum') +\
+               wy * F.smooth_l1_loss(self.xy_plane[:,:,:,1:], self.xy_plane[:,:,:,:-1], reduction='sum') +\
+               wx * F.smooth_l1_loss(self.xz_plane[:,:,1:], self.xz_plane[:,:,:-1], reduction='sum') +\
+               wz * F.smooth_l1_loss(self.xz_plane[:,:,:,1:], self.xz_plane[:,:,:,:-1], reduction='sum') +\
+               wy * F.smooth_l1_loss(self.yz_plane[:,:,1:], self.yz_plane[:,:,:-1], reduction='sum') +\
+               wz * F.smooth_l1_loss(self.yz_plane[:,:,:,1:], self.yz_plane[:,:,:,:-1], reduction='sum') +\
+               wx * F.smooth_l1_loss(self.x_vec[:,:,1:], self.x_vec[:,:,:-1], reduction='sum') +\
+               wy * F.smooth_l1_loss(self.y_vec[:,:,1:], self.y_vec[:,:,:-1], reduction='sum') +\
+               wz * F.smooth_l1_loss(self.z_vec[:,:,1:], self.z_vec[:,:,:-1], reduction='sum')
+        loss /= 6
+        loss.backward()
+
     def get_dense_grid(self):
         if self.channels > 1:
             feat = torch.cat([
@@ -135,7 +166,7 @@ class TensoRFGrid(nn.Module):
         return grid
 
     def extra_repr(self):
-        return f'channels={self.channels}, world_size={self.world_size.tolist()}, n_comp={self.n_comp}'
+        return f'channels={self.channels}, world_size={self.world_size.tolist()}, n_comp={self.config["n_comp"]}'
 
 def compute_tensorf_feat(xy_plane, xz_plane, yz_plane, x_vec, y_vec, z_vec, f_vec, ind_norm):
     # Interp feature (feat shape: [n_pts, n_comp])

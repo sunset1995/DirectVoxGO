@@ -10,15 +10,18 @@ from torch import Tensor
 from einops import rearrange
 from torch_scatter import scatter_add, segment_coo
 
-from .dvgo import Raw2Alpha, Alphas2Weights, render_utils_cuda, total_variation_cuda, MaskCache
+from . import grid
+from .dvgo import Raw2Alpha, Alphas2Weights, render_utils_cuda
 
 
 '''Model'''
 class DirectMPIGO(torch.nn.Module):
     def __init__(self, xyz_min, xyz_max,
                  num_voxels=0, mpi_depth=0,
-                 mask_cache_path=None, mask_cache_thres=1e-3,
+                 mask_cache_path=None, mask_cache_thres=1e-3, mask_cache_world_size=None,
                  fast_color_thres=0,
+                 density_type='DenseGrid', k0_type='DenseGrid',
+                 density_config={}, k0_config={},
                  rgbnet_dim=0,
                  rgbnet_depth=3, rgbnet_width=128,
                  viewbase_pe=0,
@@ -27,21 +30,32 @@ class DirectMPIGO(torch.nn.Module):
         self.register_buffer('xyz_min', torch.Tensor(xyz_min))
         self.register_buffer('xyz_max', torch.Tensor(xyz_max))
         self.fast_color_thres = fast_color_thres
-        self.act_shift = 0
 
         # determine init grid resolution
         self._set_grid_resolution(num_voxels, mpi_depth)
 
         # init density voxel grid
-        self.density = torch.nn.Parameter(torch.zeros([1, 1, *self.world_size]))
+        self.density_type = density_type
+        self.density_config = density_config
+        self.density = grid.create_grid(
+                density_type, channels=1, world_size=self.world_size,
+                xyz_min=self.xyz_min, xyz_max=self.xyz_max,
+                config=self.density_config)
+
+        # init density bias so that the initial contribution (the alpha values)
+        # of each query points on a ray is equal
+        self.act_shift = grid.DenseGrid(
+                channels=1, world_size=[1,1,mpi_depth],
+                xyz_min=xyz_min, xyz_max=xyz_max)
+        self.act_shift.grid.requires_grad = False
         with torch.no_grad():
             g = np.full([mpi_depth], 1./mpi_depth - 1e-6)
             p = [1-g[0]]
             for i in range(1, len(g)):
                 p.append((1-g[:i+1].sum())/(1-g[:i].sum()))
             for i in range(len(p)):
-                self.density[..., i].fill_(np.log(p[i] ** (-1/self.voxel_size_ratio) - 1))
-            self.density[..., -1].fill_(10)
+                self.act_shift.grid[..., i].fill_(np.log(p[i] ** (-1/self.voxel_size_ratio) - 1))
+            self.act_shift.grid[..., -1].fill_(10)
 
         # init color representation
         # feature voxel grid + shallow MLP  (fine stage)
@@ -50,14 +64,22 @@ class DirectMPIGO(torch.nn.Module):
             'rgbnet_depth': rgbnet_depth, 'rgbnet_width': rgbnet_width,
             'viewbase_pe': viewbase_pe,
         }
+        self.k0_type = k0_type
+        self.k0_config = k0_config
         if rgbnet_dim <= 0:
             # color voxel grid  (coarse stage)
             self.k0_dim = 3
-            self.k0 = torch.nn.Parameter(torch.zeros([1, self.k0_dim, *self.world_size]))
+            self.k0 = grid.create_grid(
+                k0_type, channels=self.k0_dim, world_size=self.world_size,
+                xyz_min=self.xyz_min, xyz_max=self.xyz_max,
+                config=self.k0_config)
             self.rgbnet = None
         else:
             self.k0_dim = rgbnet_dim
-            self.k0 = torch.nn.Parameter(torch.zeros([1, self.k0_dim, *self.world_size]))
+            self.k0 = grid.create_grid(
+                    k0_type, channels=self.k0_dim, world_size=self.world_size,
+                    xyz_min=self.xyz_min, xyz_max=self.xyz_max,
+                    config=self.k0_config)
             self.register_buffer('viewfreq', torch.FloatTensor([(2**i) for i in range(viewbase_pe)]))
             dim0 = (3+3*viewbase_pe*2) + self.k0_dim
             self.rgbnet = nn.Sequential(
@@ -70,27 +92,29 @@ class DirectMPIGO(torch.nn.Module):
             )
             nn.init.constant_(self.rgbnet[-1].bias, 0)
 
-        print('dmpigo: self.density.shape', self.density.shape)
-        print('dmpigo: self.k0.shape', self.k0.shape)
+        print('dmpigo: densitye grid', self.density)
+        print('dmpigo: feature grid', self.k0)
         print('dmpigo: mlp', self.rgbnet)
 
         # Using the coarse geometry if provided (used to determine known free space and unknown space)
         # Re-implement as occupancy grid (2021/1/31)
         self.mask_cache_path = mask_cache_path
         self.mask_cache_thres = mask_cache_thres
+        if mask_cache_world_size is None:
+            mask_cache_world_size = self.world_size
         if mask_cache_path is not None and mask_cache_path:
-            mask_cache = MaskCache(
+            mask_cache = grid.MaskGrid(
                     path=mask_cache_path,
                     mask_cache_thres=mask_cache_thres).to(self.xyz_min.device)
             self_grid_xyz = torch.stack(torch.meshgrid(
-                torch.linspace(self.xyz_min[0], self.xyz_max[0], self.density.shape[2]),
-                torch.linspace(self.xyz_min[1], self.xyz_max[1], self.density.shape[3]),
-                torch.linspace(self.xyz_min[2], self.xyz_max[2], self.density.shape[4]),
+                torch.linspace(self.xyz_min[0], self.xyz_max[0], mask_cache_world_size[0]),
+                torch.linspace(self.xyz_min[1], self.xyz_max[1], mask_cache_world_size[1]),
+                torch.linspace(self.xyz_min[2], self.xyz_max[2], mask_cache_world_size[2]),
             ), -1)
             mask = mask_cache(self_grid_xyz)
         else:
-            mask = torch.ones(list(self.world_size), dtype=torch.bool)
-        self.mask_cache = MaskCache(
+            mask = torch.ones(list(mask_cache_world_size), dtype=torch.bool)
+        self.mask_cache = grid.MaskGrid(
                 path=None, mask=mask,
                 xyz_min=self.xyz_min, xyz_max=self.xyz_max)
 
@@ -112,11 +136,15 @@ class DirectMPIGO(torch.nn.Module):
             'xyz_max': self.xyz_max.cpu().numpy(),
             'num_voxels': self.num_voxels,
             'mpi_depth': self.mpi_depth,
-            'act_shift': self.act_shift,
             'voxel_size_ratio': self.voxel_size_ratio,
             'mask_cache_path': self.mask_cache_path,
             'mask_cache_thres': self.mask_cache_thres,
+            'mask_cache_world_size': list(self.mask_cache.mask.shape),
             'fast_color_thres': self.fast_color_thres,
+            'density_type': self.density_type,
+            'k0_type': self.k0_type,
+            'density_config': self.density_config,
+            'k0_config': self.k0_config,
             **self.rgbnet_kwargs,
         }
 
@@ -125,50 +153,50 @@ class DirectMPIGO(torch.nn.Module):
         print('dmpigo: scale_volume_grid start')
         ori_world_size = self.world_size
         self._set_grid_resolution(num_voxels, mpi_depth)
-        print('dmpigo: scale_volume_grid scale world_size from', ori_world_size, 'to', self.world_size)
+        print('dmpigo: scale_volume_grid scale world_size from', ori_world_size.tolist(), 'to', self.world_size.tolist())
 
-        self.density = torch.nn.Parameter(
-            F.interpolate(self.density.data, size=tuple(self.world_size), mode='trilinear', align_corners=True))
-        self.k0 = torch.nn.Parameter(
-                F.interpolate(self.k0.data, size=tuple(self.world_size), mode='trilinear', align_corners=True))
+        self.density.scale_volume_grid(self.world_size)
+        self.k0.scale_volume_grid(self.world_size)
 
-        self_grid_xyz = torch.stack(torch.meshgrid(
-            torch.linspace(self.xyz_min[0], self.xyz_max[0], self.density.shape[2]),
-            torch.linspace(self.xyz_min[1], self.xyz_max[1], self.density.shape[3]),
-            torch.linspace(self.xyz_min[2], self.xyz_max[2], self.density.shape[4]),
-        ), -1)
-        self_alpha = F.max_pool3d(self.activate_density(self.density), kernel_size=3, padding=1, stride=1)[0,0]
-        self.mask_cache = MaskCache(
-                path=None, mask=(self_alpha>self.fast_color_thres),
-                xyz_min=self.xyz_min, xyz_max=self.xyz_max)
+        if np.prod(list(self.world_size)) <= 512**3:
+            self_grid_xyz = torch.stack(torch.meshgrid(
+                torch.linspace(self.xyz_min[0], self.xyz_max[0], self.world_size[0]),
+                torch.linspace(self.xyz_min[1], self.xyz_max[1], self.world_size[1]),
+                torch.linspace(self.xyz_min[2], self.xyz_max[2], self.world_size[2]),
+            ), -1)
+            self_alpha = F.max_pool3d(self.activate_density(self.density.get_dense_grid()), kernel_size=3, padding=1, stride=1)[0,0]
+            self.mask_cache = grid.MaskGrid(
+                    path=None, mask=self.mask_cache(self_grid_xyz) & (self_alpha>self.fast_color_thres),
+                    xyz_min=self.xyz_min, xyz_max=self.xyz_max)
 
         print('dmpigo: scale_volume_grid finish')
+
+    @torch.no_grad()
+    def update_occupancy_cache(self):
+        cache_grid_xyz = torch.stack(torch.meshgrid(
+            torch.linspace(self.xyz_min[0], self.xyz_max[0], self.mask_cache.mask.shape[0]),
+            torch.linspace(self.xyz_min[1], self.xyz_max[1], self.mask_cache.mask.shape[1]),
+            torch.linspace(self.xyz_min[2], self.xyz_max[2], self.mask_cache.mask.shape[2]),
+        ), -1)
+        cache_grid_density = self.density(cache_grid_xyz)[None,None]
+        cache_grid_alpha = self.activate_density(cache_grid_density)
+        cache_grid_alpha = F.max_pool3d(cache_grid_alpha, kernel_size=3, padding=1, stride=1)[0,0]
+        self.mask_cache.mask &= (cache_grid_alpha > self.fast_color_thres)
 
     def density_total_variation_add_grad(self, weight, dense_mode):
         wxy = weight * self.world_size[:2].max() / 128
         wz = weight * self.mpi_depth / 128
-        total_variation_cuda.total_variation_add_grad(
-            self.density, self.density.grad, wxy, wxy, wz, dense_mode)
+        self.density.total_variation_add_grad(wxy, wxy, wz, dense_mode)
 
     def k0_total_variation_add_grad(self, weight, dense_mode):
         wxy = weight * self.world_size[:2].max() / 128
         wz = weight * self.mpi_depth / 128
-        total_variation_cuda.total_variation_add_grad(
-            self.k0, self.k0.grad, wxy, wxy, wz, dense_mode)
+        self.k0.total_variation_add_grad(wxy, wxy, wz, dense_mode)
 
     def activate_density(self, density, interval=None):
         interval = interval if interval is not None else self.voxel_size_ratio
         shape = density.shape
         return Raw2Alpha.apply(density.flatten(), 0, interval).reshape(shape)
-
-    def grid_sampler(self, xyz, grid):
-        '''Wrapper for the interp operation'''
-        num_ch = grid.shape[1]
-        xyz = xyz.reshape(1,1,1,-1,3)
-        ind_norm = ((xyz - self.xyz_min) / (self.xyz_max - self.xyz_min)).flip((-1,)) * 2 - 1
-        ret = F.grid_sample(grid, ind_norm, mode='bilinear', align_corners=True)
-        ret = ret.reshape(num_ch,-1).T.squeeze(1)
-        return ret
 
     def sample_ray(self, rays_o, rays_d, near, far, stepsize, is_train=False, **render_kwargs):
         '''Sample query points on rays.
@@ -221,7 +249,7 @@ class DirectMPIGO(torch.nn.Module):
             step_id = step_id[mask]
 
         # query for alpha w/ post-activation
-        density = self.grid_sampler(ray_pts, self.density)
+        density = self.density(ray_pts) + self.act_shift(ray_pts)
         alpha = self.activate_density(density, interval)
         if self.fast_color_thres > 0:
             mask = (alpha > self.fast_color_thres)
@@ -241,7 +269,7 @@ class DirectMPIGO(torch.nn.Module):
             weights = weights[mask]
 
         # query for color
-        vox_emb = self.grid_sampler(ray_pts, self.k0)
+        vox_emb = self.k0(ray_pts)
 
         if self.rgbnet is None:
             # no view-depend effect
