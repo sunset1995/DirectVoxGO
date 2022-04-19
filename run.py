@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from lib import utils, dvgo, dmpigo
+from lib import utils, dvgo, dbvgo, dmpigo
 from lib.load_data import load_data
 
 
@@ -162,8 +162,7 @@ def load_everything(args, cfg):
     return data_dict
 
 
-def compute_bbox_by_cam_frustrm(args, cfg, HW, Ks, poses, i_train, near, far, **kwargs):
-    print('compute_bbox_by_cam_frustrm: start')
+def _compute_bbox_by_cam_frustrm_bounded(args, cfg, HW, Ks, poses, i_train, near, far):
     xyz_min = torch.Tensor([np.inf, np.inf, np.inf])
     xyz_max = -xyz_min
     for (H, W), K, c2w in zip(HW[i_train], Ks[i_train], poses[i_train]):
@@ -177,6 +176,27 @@ def compute_bbox_by_cam_frustrm(args, cfg, HW, Ks, poses, i_train, near, far, **
             pts_nf = torch.stack([rays_o+viewdirs*near, rays_o+viewdirs*far])
         xyz_min = torch.minimum(xyz_min, pts_nf.amin((0,1,2)))
         xyz_max = torch.maximum(xyz_max, pts_nf.amax((0,1,2)))
+    return xyz_min, xyz_max
+
+def _compute_bbox_by_cam_frustrm_unbounded(args, cfg, HW, Ks, poses, i_train, near, far):
+    # Find a tightest cube that cover all camera centers
+    cams_o = poses[i_train, :3, 3]
+    cams_o_min = cams_o.amin(0)
+    cams_o_max = cams_o.amax(0)
+    center = (cams_o_min + cams_o_max) * 0.5
+    radius = (center - cams_o_min).max()
+    xyz_min = center - radius
+    xyz_max = center + radius
+    return xyz_min, xyz_max
+
+def compute_bbox_by_cam_frustrm(args, cfg, HW, Ks, poses, i_train, near, far, **kwargs):
+    print('compute_bbox_by_cam_frustrm: start')
+    if cfg.data.unbounded_inward:
+        xyz_min, xyz_max = _compute_bbox_by_cam_frustrm_unbounded(
+                args, cfg, HW, Ks, poses, i_train, near, far)
+    else:
+        xyz_min, xyz_max = _compute_bbox_by_cam_frustrm_bounded(
+                args, cfg, HW, Ks, poses, i_train, near, far)
     print('compute_bbox_by_cam_frustrm: xyz_min', xyz_min)
     print('compute_bbox_by_cam_frustrm: xyz_max', xyz_max)
     print('compute_bbox_by_cam_frustrm: finish')
@@ -205,9 +225,52 @@ def compute_bbox_by_coarse_geo(model_class, model_path, thres):
     print('compute_bbox_by_coarse_geo: finish (eps time:', eps_time, 'secs)')
     return xyz_min, xyz_max
 
+def create_new_model(cfg, cfg_model, cfg_train, xyz_min, xyz_max, stage, coarse_ckpt_path):
+    model_kwargs = copy.deepcopy(cfg_model)
+    num_voxels = model_kwargs.pop('num_voxels')
+    if len(cfg_train.pg_scale):
+        num_voxels = int(num_voxels / (2**len(cfg_train.pg_scale)))
+
+    if cfg.data.ndc:
+        print(f'scene_rep_reconstruction ({stage}): \033[96muse multiplane images\033[0m')
+        model = dmpigo.DirectMPIGO(
+            xyz_min=xyz_min, xyz_max=xyz_max,
+            num_voxels=num_voxels,
+            **model_kwargs)
+    elif cfg.data.unbounded_inward:
+        print(f'scene_rep_reconstruction ({stage}): \033[96muse bi voxel grid (bounded + unbounded)\033[0m')
+        model = dbvgo.DirectBiVoxGO(
+            xyz_min=xyz_min, xyz_max=xyz_max,
+            num_voxels=num_voxels,
+            **model_kwargs)
+    else:
+        print(f'scene_rep_reconstruction ({stage}): \033[96muse dense voxel grid\033[0m')
+        model = dvgo.DirectVoxGO(
+            xyz_min=xyz_min, xyz_max=xyz_max,
+            num_voxels=num_voxels,
+            mask_cache_path=coarse_ckpt_path,
+            **model_kwargs)
+        if cfg_model.maskout_near_cam_vox:
+            model.maskout_near_cam_vox(poses[i_train,:3,3], near)
+    model = model.to(device)
+    optimizer = utils.create_optimizer_or_freeze_model(model, cfg_train, global_step=0)
+    return model, optimizer
+
+def load_existed_model(args, cfg, cfg_train):
+    if cfg.data.ndc:
+        model_class = dmpigo.DirectMPIGO
+    elif cfg.data.unbounded_inward:
+        model_class = dbvgo.DirectBiVoxGO
+    else:
+        model_class = dvgo.DirectVoxGO
+    model = utils.load_model(model_class, reload_ckpt_path).to(device)
+    optimizer = utils.create_optimizer_or_freeze_model(model, cfg_train, global_step=0)
+    model, optimizer, start = utils.load_checkpoint(
+            model, optimizer, reload_ckpt_path, args.no_reload_optimizer)
+    return model, optimizer, start
+
 
 def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, data_dict, stage, coarse_ckpt_path=None):
-
     # init
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if abs(cfg_model.world_bound_scale - 1) > 1e-9:
@@ -234,43 +297,11 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
     # init model and optimizer
     if reload_ckpt_path is None:
         print(f'scene_rep_reconstruction ({stage}): train from scratch')
+        model, optimizer = create_new_model(cfg, cfg_model, cfg_train, xyz_min, xyz_max, stage, coarse_ckpt_path)
         start = 0
-        # init model
-        model_kwargs = copy.deepcopy(cfg_model)
-        if cfg.data.ndc:
-            print(f'scene_rep_reconstruction ({stage}): \033[96muse multiplane images\033[0m')
-            num_voxels = model_kwargs.pop('num_voxels')
-            if len(cfg_train.pg_scale) and reload_ckpt_path is None:
-                num_voxels = int(num_voxels / (2**len(cfg_train.pg_scale)))
-            model = dmpigo.DirectMPIGO(
-                xyz_min=xyz_min, xyz_max=xyz_max,
-                num_voxels=num_voxels,
-                mask_cache_path=coarse_ckpt_path,
-                **model_kwargs)
-        else:
-            print(f'scene_rep_reconstruction ({stage}): \033[96muse dense voxel grid\033[0m')
-            num_voxels = model_kwargs.pop('num_voxels')
-            if len(cfg_train.pg_scale) and reload_ckpt_path is None:
-                num_voxels = int(num_voxels / (2**len(cfg_train.pg_scale)))
-            model = dvgo.DirectVoxGO(
-                xyz_min=xyz_min, xyz_max=xyz_max,
-                num_voxels=num_voxels,
-                mask_cache_path=coarse_ckpt_path,
-                **model_kwargs)
-            if cfg_model.maskout_near_cam_vox:
-                model.maskout_near_cam_vox(poses[i_train,:3,3], near)
-        model = model.to(device)
-        optimizer = utils.create_optimizer_or_freeze_model(model, cfg_train, global_step=0)
     else:
         print(f'scene_rep_reconstruction ({stage}): reload from {reload_ckpt_path}')
-        if cfg.data.ndc:
-            model_class = dmpigo.DirectMPIGO
-        else:
-            model_class = dvgo.DirectVoxGO
-        model = utils.load_model(model_class, reload_ckpt_path).to(device)
-        optimizer = utils.create_optimizer_or_freeze_model(model, cfg_train, global_step=0)
-        model, optimizer, start = utils.load_checkpoint(
-                model, optimizer, reload_ckpt_path, args.no_reload_optimizer)
+        model, optimizer, start = load_existed_model(args, cfg, cfg_train)
 
     # init rendering setup
     render_kwargs = {
@@ -342,7 +373,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         if global_step in cfg_train.pg_scale:
             n_rest_scales = len(cfg_train.pg_scale)-cfg_train.pg_scale.index(global_step)-1
             cur_voxels = int(cfg_model.num_voxels / (2**n_rest_scales))
-            if isinstance(model, dvgo.DirectVoxGO):
+            if isinstance(model, (dvgo.DirectVoxGO, dbvgo.DirectBiVoxGO)):
                 model.scale_volume_grid(cur_voxels)
             elif isinstance(model, dmpigo.DirectMPIGO):
                 model.scale_volume_grid(cur_voxels, model.mpi_depth)
@@ -450,7 +481,7 @@ def train(args, cfg, data_dict):
             file.write('{} = {}\n'.format(arg, attr))
     cfg.dump(os.path.join(cfg.basedir, cfg.expname, 'config.py'))
 
-    # coarse geometry searching
+    # coarse geometry searching (only works for inward bounded scenes)
     eps_coarse = time.time()
     xyz_min_coarse, xyz_max_coarse = compute_bbox_by_cam_frustrm(args=args, cfg=cfg, **data_dict)
     if cfg.coarse_train.N_iters > 0:
@@ -469,7 +500,7 @@ def train(args, cfg, data_dict):
 
     # fine detail reconstruction
     eps_fine = time.time()
-    if cfg.data.ndc:
+    if cfg.coarse_train.N_iters == 0:
         xyz_min_fine, xyz_max_fine = xyz_min_coarse.clone(), xyz_max_coarse.clone()
     else:
         xyz_min_fine, xyz_max_fine = compute_bbox_by_coarse_geo(
@@ -552,6 +583,8 @@ if __name__=='__main__':
         ckpt_name = ckpt_path.split('/')[-1][:-4]
         if cfg.data.ndc:
             model_class = dmpigo.DirectMPIGO
+        elif cfg.data.unbounded_inward:
+            model_class = dbvgo.DirectBiVoxGO
         else:
             model_class = dvgo.DirectVoxGO
         model = utils.load_model(model_class, ckpt_path).to(device)

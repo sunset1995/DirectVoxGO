@@ -19,7 +19,7 @@ data = dict(
     white_bkgd=False,             # use white background (note that some dataset don't provide alpha and with blended bg color)
     half_res=False,               # [TODO]
 
-    # Below are forward-facing llff specific settings. Not support yet.
+    # Below are forward-facing llff specific settings.
     ndc=False,                    # use ndc coordinate (only for forward-facing; not support yet)
     spherify=False,               # inward-facing
     factor=4,                     # [TODO]
@@ -27,6 +27,9 @@ data = dict(
     height=None,                  # enforce image height
     llffhold=8,                   # testsplit
     load_depths=False,            # load depth
+
+    # Below are unbounded inward-facing specific settings.
+    unbounded_inward=False,
 )
 
 ''' Template of training options

@@ -7,6 +7,7 @@ from .load_blendedmvs import load_blendedmvs_data
 from .load_tankstemple import load_tankstemple_data
 from .load_deepvoxels import load_dv_data
 from .load_co3d import load_co3d_data
+from .load_nerfpp import load_nerfpp_data
 
 
 def load_data(args):
@@ -114,6 +115,13 @@ def load_data(args):
                 images[i] = images[i] * masks[i][...,None] + (1.-masks[i][...,None])
             else:
                 images[i] = images[i] * masks[i][...,None]
+
+    elif args.dataset_type == 'nerfpp':
+        images, poses, render_poses, hwf, K, i_split = load_nerfpp_data(args.datadir)
+        print('Loaded nerf_pp', images.shape, hwf, args.datadir)
+        i_train, i_val, i_test = i_split
+
+        near, far = inward_nearfar_heuristic(poses[i_train, :3, 3], ratio=0)
 
     else:
         raise NotImplementedError(f'Unknown dataset type {args.dataset_type} exiting')
