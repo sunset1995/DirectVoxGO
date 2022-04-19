@@ -193,14 +193,14 @@ class DirectBiVoxGO(nn.Module):
             self.mask_cache[i].mask &= (cache_grid_alpha > self.fast_color_thres)
 
     def density_total_variation_add_grad(self, weight, dense_mode):
-        raise NotImplementedError
         w = weight * self.world_size.max() / 128
-        self.density.total_variation_add_grad(w, w, w, dense_mode)
+        self.density[0].total_variation_add_grad(w, w, w, dense_mode)
+        self.density[1].total_variation_add_grad(w, w, w, dense_mode)
 
     def k0_total_variation_add_grad(self, weight, dense_mode):
-        raise NotImplementedError
         w = weight * self.world_size.max() / 128
-        self.k0.total_variation_add_grad(w, w, w, dense_mode)
+        self.k0[0].total_variation_add_grad(w, w, w, dense_mode)
+        self.k0[1].total_variation_add_grad(w, w, w, dense_mode)
 
     def activate_density(self, density, interval=None):
         interval = interval if interval is not None else self.voxel_size_ratio
@@ -253,7 +253,6 @@ class DirectBiVoxGO(nn.Module):
             assert len(ray_pts.shape) == 3
             ray_id, step_id = create_full_step_id(ray_pts.shape[:2])
             ray_pts = ray_pts.reshape(-1, 3)
-        #print('|ray_pts| =', len(ray_pts))
 
         # skip ray which is already occluded by fg
         if prev_alphainv_last is not None:
@@ -261,14 +260,12 @@ class DirectBiVoxGO(nn.Module):
             ray_id = ray_id.view(N,-1)[mask].view(-1)
             step_id = step_id.view(N,-1)[mask].view(-1)
             ray_pts = ray_pts.view(N,-1,3)[mask].view(-1,3)
-            #print('after prev_alphainv_last |ray_pts| =', len(ray_pts), mask.float().mean().item())
 
         # skip known free space
         mask = mask_grid(ray_pts)
         ray_pts = ray_pts[mask]
         ray_id = ray_id[mask]
         step_id = step_id[mask]
-        #print('after mask_grid |ray_pts| =', len(ray_pts), mask.float().mean().item())
 
         # query for alpha w/ post-activation
         density = density_grid(ray_pts)
@@ -280,7 +277,6 @@ class DirectBiVoxGO(nn.Module):
             step_id = step_id[mask]
             density = density[mask]
             alpha = alpha[mask]
-            #print('after alpha |ray_pts| =', len(ray_pts), mask.float().mean().item())
 
         # compute accumulated transmittance
         weights, alphainv_last = Alphas2Weights.apply(alpha, ray_id, N)
@@ -291,7 +287,6 @@ class DirectBiVoxGO(nn.Module):
             ray_pts = ray_pts[mask]
             ray_id = ray_id[mask]
             step_id = step_id[mask]
-            #print('after weights |ray_pts| =', len(ray_pts), mask.float().mean().item())
 
         # query for color
         k0 = k0_grid(ray_pts)
@@ -329,7 +324,6 @@ class DirectBiVoxGO(nn.Module):
         interval = render_kwargs['stepsize'] * self.voxel_size_ratio
 
         # query for foreground
-        #print('FG')
         fg = self._forward(
                 ray_pts=ray_pts, viewdirs=viewdirs,
                 interval=interval, N=N,
@@ -340,7 +334,6 @@ class DirectBiVoxGO(nn.Module):
                 ray_id=ray_id, step_id=step_id)
 
         # query for background
-        #print('BG')
         bg = self._forward(
                 ray_pts=ray_pts_outer, viewdirs=viewdirs,
                 interval=interval, N=N,
@@ -349,7 +342,6 @@ class DirectBiVoxGO(nn.Module):
                 k0_grid=self.k0[1],
                 rgbnet=self.rgbnet[1],
                 prev_alphainv_last=fg['alphainv_last'])
-        #print('=' * 10)
 
         # Ray marching
         rgb_marched_fg = segment_coo(
@@ -365,8 +357,6 @@ class DirectBiVoxGO(nn.Module):
         rgb_marched = rgb_marched_fg + \
                       fg['alphainv_last'].unsqueeze(-1) * rgb_marched_bg + \
                       (fg['alphainv_last'] * bg['alphainv_last']).unsqueeze(-1) * render_kwargs['bg']
-        #print(fg['alphainv_last'].quantile(torch.Tensor([0, 0.1, 0.5, 0.9, 1])))
-        #print(bg['alphainv_last'].quantile(torch.Tensor([0, 0.1, 0.5, 0.9, 1])))
         ret_dict.update({
             'rgb_marched': rgb_marched,
             'alphainv_last': torch.cat([fg['alphainv_last'], bg['alphainv_last']]),
@@ -379,11 +369,29 @@ class DirectBiVoxGO(nn.Module):
         if render_kwargs.get('render_depth', False):
             # TODO: add bg
             with torch.no_grad():
-                depth = segment_coo(
+                depth_fg = segment_coo(
                         src=(fg['weights'] * fg['step_id']),
                         index=fg['ray_id'],
                         out=torch.zeros([N]),
                         reduce='sum')
+                depth_bg = segment_coo(
+                        src=(bg['weights'] * bg['step_id']),
+                        index=bg['ray_id'],
+                        out=torch.zeros([N]),
+                        reduce='sum')
+                depth_fg_last = segment_coo(
+                        src=fg['step_id'].float(),
+                        index=fg['ray_id'],
+                        out=torch.zeros([N]),
+                        reduce='max')
+                depth_bg_last = segment_coo(
+                        src=bg['step_id'].float(),
+                        index=bg['ray_id'],
+                        out=depth_fg_last.clone(),
+                        reduce='max')
+                depth = depth_fg + \
+                        fg['alphainv_last'] * (1 + depth_fg_last + depth_bg) + \
+                        fg['alphainv_last'] * bg['alphainv_last'] * (2 + depth_fg_last + depth_bg_last)
             ret_dict.update({'depth': depth})
 
         return ret_dict
