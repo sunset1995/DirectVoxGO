@@ -4,8 +4,10 @@ https://github.com/Kai-46/nerfplusplus/blob/master/data_loader_split.py
 '''
 import os
 import glob
+import scipy
 import imageio
 import numpy as np
+import torch
 
 ########################################################################################################################
 # camera coordinate system: x-->right, y-->down, z-->scene (opencv/colmap convention)
@@ -66,11 +68,6 @@ def load_data_split(split_dir, skip=1, try_load_min_depth=True, only_img_files=F
     else:
         mindepth_files = [None, ] * cam_cnt
 
-    # assume all images have the same size as training image
-    # train_imgfile = find_files('{}/train/rgb'.format(basedir), exts=['*.png', '*.jpg'])[0]
-    # train_im = imageio.imread(train_imgfile)
-    # H, W = train_im.shape[:2]
-
     return intrinsics_files, pose_files, img_files, mask_files, mindepth_files
 
 
@@ -115,10 +112,24 @@ def load_nerfpp_data(basedir):
     # Bundle all data
     imgs = np.stack(imgs, 0)
     poses = np.stack(poses, 0)
-    render_poses = poses[i_split[1]]
     i_split.append(i_split[1])
     H, W = imgs.shape[1:3]
     focal = K[[0,1], [0,1]].mean()
+
+    # Generate movie trajectory
+    ts = np.linspace(0,1,len(i_split[1]))
+    interp = scipy.interpolate.interp1d(ts, poses[i_split[1],:3,3], axis=0)
+    slerp = scipy.spatial.transform.Slerp(
+        ts, scipy.spatial.transform.Rotation.from_matrix(poses[i_split[1],:3,:3]))
+    render_ts = np.linspace(0,1,50)
+    render_poses = np.concatenate([
+        slerp(render_ts).as_matrix(),
+        interp(render_ts)[:,:,None],
+    ], axis=2)
+    render_poses = np.concatenate([
+        render_poses, np.array([0,0,0,1]).reshape(1,1,4).repeat(len(render_poses),0)
+    ], axis=1)
+    render_poses = torch.Tensor(render_poses)
 
     return imgs, poses, render_poses, [H, W, focal], K, i_split
 
