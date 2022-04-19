@@ -23,7 +23,7 @@ class DirectBiVoxGO(nn.Module):
                  fast_color_thres=0,
                  density_type='DenseGrid', k0_type='DenseGrid',
                  density_config={}, k0_config={},
-                 rgbnet_dim=0,
+                 rgbnet_dim=0, bg_use_mlp=True,
                  rgbnet_depth=3, rgbnet_width=128,
                  viewbase_pe=4,
                  **kwargs):
@@ -105,6 +105,12 @@ class DirectBiVoxGO(nn.Module):
             ])
             nn.init.constant_(self.rgbnet[0][-1].bias, 0)
             nn.init.constant_(self.rgbnet[1][-1].bias, 0)
+            if not bg_use_mlp:
+                self.k0[1] = grid.create_grid(
+                    k0_type, channels=3, world_size=self.world_size,
+                    xyz_min=self.xyz_min, xyz_max=self.xyz_max,
+                    config=self.k0_config)
+                self.rgbnet[1] = None
             print('dvgo: feature voxel grid', self.k0)
             print('dvgo: mlp', self.rgbnet)
 
