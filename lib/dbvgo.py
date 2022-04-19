@@ -273,9 +273,6 @@ class DirectBiVoxGO(nn.Module):
         # query for alpha w/ post-activation
         density = density_grid(ray_pts)
         alpha = self.activate_density(density, interval)
-        if prev_alphainv_last is not None:
-            # decay alpha due to occlusion by fg
-            alpha = alpha * prev_alphainv_last[ray_id]
         if self.fast_color_thres > 0:
             mask = (alpha > self.fast_color_thres)
             ray_pts = ray_pts[mask]
@@ -366,8 +363,8 @@ class DirectBiVoxGO(nn.Module):
                 out=torch.zeros([N, 3]),
                 reduce='sum')
         rgb_marched = rgb_marched_fg + \
-                      rgb_marched_bg + \
-                      bg['alphainv_last'].unsqueeze(-1) * render_kwargs['bg']
+                      fg['alphainv_last'].unsqueeze(-1) * rgb_marched_bg + \
+                      (fg['alphainv_last'] * bg['alphainv_last']).unsqueeze(-1) * render_kwargs['bg']
         #print(fg['alphainv_last'].quantile(torch.Tensor([0, 0.1, 0.5, 0.9, 1])))
         #print(bg['alphainv_last'].quantile(torch.Tensor([0, 0.1, 0.5, 0.9, 1])))
         ret_dict.update({
