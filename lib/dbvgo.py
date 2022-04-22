@@ -20,7 +20,7 @@ class DirectBiVoxGO(nn.Module):
                  num_voxels=0, num_voxels_base=0,
                  alpha_init=None,
                  mask_cache_world_size=None,
-                 fast_color_thres=0,
+                 fast_color_thres=0, bg_preserve=0.5,
                  density_type='DenseGrid', k0_type='DenseGrid',
                  density_config={}, k0_config={},
                  rgbnet_dim=0, bg_use_mlp=True,
@@ -36,6 +36,7 @@ class DirectBiVoxGO(nn.Module):
         self.register_buffer('xyz_min', torch.Tensor([-1,-1,-1]))
         self.register_buffer('xyz_max', torch.Tensor([1,1,1]))
         self.fast_color_thres = fast_color_thres
+        self.bg_preserve = bg_preserve
 
         # determine based grid resolution
         self.num_voxels_base = num_voxels_base
@@ -238,16 +239,9 @@ class DirectBiVoxGO(nn.Module):
         ray_id = ray_id[mask_inbbox]
         step_id = step_id[mask_inbbox]
         # sample query points in outer scene
-        N_outer = int(np.sqrt(3) / stepdist.item()) + 1
-        ori_t_outer = t_max[:,None] - 1 + 1 / torch.linspace(1, 0, N_outer+1)[:-1]
-        ori_ray_pts_outer = (rays_o[:,None,:] + rays_d[:,None,:] * ori_t_outer[:,:,None]).reshape(-1,3)
-        t_outer = ori_ray_pts_outer.norm(dim=-1)
-        R_outer = render_utils_cuda.infer_t_minmax(
-                torch.zeros_like(ori_ray_pts_outer), ori_ray_pts_outer/t_outer[:,None],
-                self.xyz_min, self.xyz_max, 0, np.sqrt(3))[1]
-        # r = R * R / t
-        o2i_p = R_outer.pow(2) / t_outer.pow(2)
-        ray_pts_outer = (ori_ray_pts_outer * o2i_p[:,None]).reshape(len(rays_o), -1, 3)
+        N_outer = int(np.sqrt(3) / stepdist.item() * (1-self.bg_preserve)) + 1
+        ray_pts_outer = render_utils_cuda.sample_bg_pts_on_rays(
+            rays_o, rays_d, t_max, self.bg_preserve, N_outer)
         return ray_pts, ray_id, step_id, ray_pts_outer
 
     def _forward(self, ray_pts, viewdirs, interval, N,

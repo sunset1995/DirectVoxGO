@@ -286,6 +286,73 @@ std::vector<torch::Tensor> sample_ndc_pts_on_rays_cuda(
   return {rays_pts, mask_outbbox};
 }
 
+template <typename scalar_t>
+__device__ __forceinline__ scalar_t norm3(const scalar_t x, const scalar_t y, const scalar_t z) {
+  return sqrt(x*x + y*y + z*z);
+}
+
+template <typename scalar_t>
+__global__ void sample_bg_pts_on_rays_cuda_kernel(
+        const scalar_t* __restrict__ rays_o,
+        const scalar_t* __restrict__ rays_d,
+        const scalar_t* __restrict__ t_max,
+        const float bg_preserve,
+        const int N_samples, const int n_rays,
+        scalar_t* __restrict__ rays_pts) {
+  const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if(idx<N_samples*n_rays) {
+    const int i_ray = idx / N_samples;
+    const int i_step = idx % N_samples;
+
+    const int offset_p = idx * 3;
+    const int offset_r = i_ray * 3;
+    /* Original pytorch implementation
+    ori_t_outer = t_max[:,None] - 1 + 1 / torch.linspace(1, 0, N_outer+1)[:-1]
+    ori_ray_pts_outer = (rays_o[:,None,:] + rays_d[:,None,:] * ori_t_outer[:,:,None]).reshape(-1,3)
+    t_outer = ori_ray_pts_outer.norm(dim=-1)
+    R_outer = t_outer / ori_ray_pts_outer.abs().amax(1)
+    # r = R * R / t
+    o2i_p = R_outer.pow(2) / t_outer.pow(2) * (1-self.bg_preserve) + R_outer / t_outer * self.bg_preserve
+    ray_pts_outer = (ori_ray_pts_outer * o2i_p[:,None]).reshape(len(rays_o), -1, 3)
+   */
+    const float t_inner = t_max[i_ray];
+    const float ori_t_outer = t_inner - 1. + 1. / (1. - ((float)i_step) / N_samples);
+    const float ori_ray_pts_x =  rays_o[offset_r  ] + rays_d[offset_r  ] * ori_t_outer;
+    const float ori_ray_pts_y =  rays_o[offset_r+1] + rays_d[offset_r+1] * ori_t_outer;
+    const float ori_ray_pts_z =  rays_o[offset_r+2] + rays_d[offset_r+2] * ori_t_outer;
+    const float t_outer = norm3(ori_ray_pts_x, ori_ray_pts_y, ori_ray_pts_z);
+    const float ori_ray_pts_m = max(abs(ori_ray_pts_x), max(abs(ori_ray_pts_y), abs(ori_ray_pts_z)));
+    const float R_outer = t_outer / ori_ray_pts_m;
+    const float o2i_p = R_outer*R_outer / (t_outer*t_outer) * (1.-bg_preserve) + R_outer / t_outer * bg_preserve;
+    const float px = ori_ray_pts_x * o2i_p;
+    const float py = ori_ray_pts_y * o2i_p;
+    const float pz = ori_ray_pts_z * o2i_p;
+    rays_pts[offset_p  ] = px;
+    rays_pts[offset_p+1] = py;
+    rays_pts[offset_p+2] = pz;
+  }
+}
+
+torch::Tensor sample_bg_pts_on_rays_cuda(
+        torch::Tensor rays_o, torch::Tensor rays_d, torch::Tensor t_max,
+        const float bg_preserve, const int N_samples) {
+  const int threads = 256;
+  const int n_rays = rays_o.size(0);
+
+  auto rays_pts = torch::empty({n_rays, N_samples, 3}, torch::dtype(rays_o.dtype()).device(torch::kCUDA));
+
+  AT_DISPATCH_FLOATING_TYPES(rays_o.type(), "sample_bg_pts_on_rays_cuda", ([&] {
+    sample_bg_pts_on_rays_cuda_kernel<scalar_t><<<(n_rays*N_samples+threads-1)/threads, threads>>>(
+        rays_o.data<scalar_t>(),
+        rays_d.data<scalar_t>(),
+        t_max.data<scalar_t>(),
+        bg_preserve,
+        N_samples, n_rays,
+        rays_pts.data<scalar_t>());
+  }));
+  return rays_pts;
+}
+
 
 /*
    MaskCache lookup to skip known freespace.

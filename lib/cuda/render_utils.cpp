@@ -22,6 +22,10 @@ std::vector<torch::Tensor> sample_ndc_pts_on_rays_cuda(
         torch::Tensor xyz_min, torch::Tensor xyz_max,
         const int N_samples);
 
+torch::Tensor sample_bg_pts_on_rays_cuda(
+        torch::Tensor rays_o, torch::Tensor rays_d, torch::Tensor t_max,
+        const float bg_preserve, const int N_samples);
+
 torch::Tensor maskcache_lookup_cuda(torch::Tensor world, torch::Tensor xyz, torch::Tensor xyz2ijk_scale, torch::Tensor xyz2ijk_shift);
 
 std::vector<torch::Tensor> raw2alpha_cuda(torch::Tensor density, const float shift, const float interval);
@@ -90,6 +94,15 @@ std::vector<torch::Tensor> sample_ndc_pts_on_rays(
   return sample_ndc_pts_on_rays_cuda(rays_o, rays_d, xyz_min, xyz_max, N_samples);
 }
 
+torch::Tensor sample_bg_pts_on_rays(
+        torch::Tensor rays_o, torch::Tensor rays_d, torch::Tensor t_max,
+        const float bg_preserve, const int N_samples) {
+  CHECK_INPUT(rays_o);
+  CHECK_INPUT(rays_d);
+  CHECK_INPUT(t_max);
+  return sample_bg_pts_on_rays_cuda(rays_o, rays_d, t_max, bg_preserve, N_samples);
+}
+
 torch::Tensor maskcache_lookup(torch::Tensor world, torch::Tensor xyz, torch::Tensor xyz2ijk_scale, torch::Tensor xyz2ijk_shift) {
   CHECK_INPUT(world);
   CHECK_INPUT(xyz);
@@ -147,6 +160,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("infer_ray_start_dir", &infer_ray_start_dir, "Inference the starting point and shooting direction of each ray");
   m.def("sample_pts_on_rays", &sample_pts_on_rays, "Sample points on rays");
   m.def("sample_ndc_pts_on_rays", &sample_ndc_pts_on_rays, "Sample points on rays");
+  m.def("sample_bg_pts_on_rays", &sample_bg_pts_on_rays, "Sample points on bg");
   m.def("maskcache_lookup", &maskcache_lookup, "Lookup to skip know freespace.");
   m.def("raw2alpha", &raw2alpha, "Raw values [-inf, inf] to alpha [0, 1].");
   m.def("raw2alpha_backward", &raw2alpha_backward, "Backward pass of the raw to alpha");
