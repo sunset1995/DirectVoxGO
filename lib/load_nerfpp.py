@@ -117,18 +117,10 @@ def load_nerfpp_data(basedir):
     focal = K[[0,1], [0,1]].mean()
 
     # Generate movie trajectory
-    ts = np.linspace(0,1,len(i_split[1]))
-    interp = scipy.interpolate.interp1d(ts, poses[i_split[1],:3,3], axis=0)
-    slerp = scipy.spatial.transform.Slerp(
-        ts, scipy.spatial.transform.Rotation.from_matrix(poses[i_split[1],:3,:3]))
-    render_ts = np.linspace(0,1,50)
-    render_poses = np.concatenate([
-        slerp(render_ts).as_matrix(),
-        interp(render_ts)[:,:,None],
-    ], axis=2)
-    render_poses = np.concatenate([
-        render_poses, np.array([0,0,0,1]).reshape(1,1,4).repeat(len(render_poses),0)
-    ], axis=1)
+    render_poses_path = sorted(glob.glob(os.path.join(basedir, 'camera_path', 'pose', '*txt')))
+    render_poses = []
+    for path in render_poses_path:
+        render_poses.append(np.loadtxt(path).reshape(4,4))
     render_poses = torch.Tensor(render_poses)
 
     return imgs, poses, render_poses, [H, W, focal], K, i_split
