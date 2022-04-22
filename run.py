@@ -380,7 +380,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             else:
                 raise NotImplementedError
             optimizer = utils.create_optimizer_or_freeze_model(model, cfg_train, global_step=0)
-            model.act_shift -= 1
+            model.act_shift -= cfg_train.decay_after_scale
 
         # random sample rays
         if cfg_train.ray_sampler in ['flatten', 'in_maskcache']:
