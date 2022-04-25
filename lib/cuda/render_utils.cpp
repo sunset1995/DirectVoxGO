@@ -29,8 +29,10 @@ torch::Tensor sample_bg_pts_on_rays_cuda(
 torch::Tensor maskcache_lookup_cuda(torch::Tensor world, torch::Tensor xyz, torch::Tensor xyz2ijk_scale, torch::Tensor xyz2ijk_shift);
 
 std::vector<torch::Tensor> raw2alpha_cuda(torch::Tensor density, const float shift, const float interval);
+std::vector<torch::Tensor> raw2alpha_nonuni_cuda(torch::Tensor density, const float shift, torch::Tensor interval);
 
 torch::Tensor raw2alpha_backward_cuda(torch::Tensor exp, torch::Tensor grad_back, const float interval);
+torch::Tensor raw2alpha_nonuni_backward_cuda(torch::Tensor exp, torch::Tensor grad_back, torch::Tensor interval);
 
 std::vector<torch::Tensor> alpha2weight_cuda(torch::Tensor alpha, torch::Tensor ray_id, const int n_rays);
 
@@ -119,11 +121,21 @@ std::vector<torch::Tensor> raw2alpha(torch::Tensor density, const float shift, c
   assert(density.dim()==1);
   return raw2alpha_cuda(density, shift, interval);
 }
+std::vector<torch::Tensor> raw2alpha_nonuni(torch::Tensor density, const float shift, torch::Tensor interval) {
+  CHECK_INPUT(density);
+  assert(density.dim()==1);
+  return raw2alpha_nonuni_cuda(density, shift, interval);
+}
 
 torch::Tensor raw2alpha_backward(torch::Tensor exp, torch::Tensor grad_back, const float interval) {
   CHECK_INPUT(exp);
   CHECK_INPUT(grad_back);
   return raw2alpha_backward_cuda(exp, grad_back, interval);
+}
+torch::Tensor raw2alpha_nonuni_backward(torch::Tensor exp, torch::Tensor grad_back, torch::Tensor interval) {
+  CHECK_INPUT(exp);
+  CHECK_INPUT(grad_back);
+  return raw2alpha_nonuni_backward_cuda(exp, grad_back, interval);
 }
 
 std::vector<torch::Tensor> alpha2weight(torch::Tensor alpha, torch::Tensor ray_id, const int n_rays) {
@@ -164,6 +176,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("maskcache_lookup", &maskcache_lookup, "Lookup to skip know freespace.");
   m.def("raw2alpha", &raw2alpha, "Raw values [-inf, inf] to alpha [0, 1].");
   m.def("raw2alpha_backward", &raw2alpha_backward, "Backward pass of the raw to alpha");
+  m.def("raw2alpha_nonuni", &raw2alpha_nonuni, "Raw values [-inf, inf] to alpha [0, 1].");
+  m.def("raw2alpha_nonuni_backward", &raw2alpha_nonuni_backward, "Backward pass of the raw to alpha");
   m.def("alpha2weight", &alpha2weight, "Per-point alpha to accumulated blending weight");
   m.def("alpha2weight_backward", &alpha2weight_backward, "Backward pass of alpha2weight");
 }

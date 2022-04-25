@@ -30,6 +30,7 @@ data = dict(
 
     # Below are unbounded inward-facing specific settings.
     unbounded_inward=False,
+    unbounded_inner_r=1.0,
 )
 
 ''' Template of training options
@@ -46,6 +47,8 @@ coarse_train = dict(
     ray_sampler='random',         # ray sampling strategies
     weight_main=1.0,              # weight of photometric loss
     weight_entropy_last=0.01,     # weight of background entropy loss
+    weight_entropy_last_mid=0,
+    weight_sparse=0,
     weight_rgbper=0.1,            # weight of per-point rgb loss
     tv_every=1,                   # count total variation loss every tv_every step
     tv_after=0,                   # count total variation loss from tv_from step

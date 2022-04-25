@@ -436,6 +436,21 @@ __global__ void raw2alpha_cuda_kernel(
   }
 }
 
+template <typename scalar_t>
+__global__ void raw2alpha_nonuni_cuda_kernel(
+    scalar_t* __restrict__ density,
+    const float shift, scalar_t* __restrict__ interval, const int n_pts,
+    scalar_t* __restrict__ exp_d,
+    scalar_t* __restrict__ alpha) {
+
+  const int i_pt = blockIdx.x * blockDim.x + threadIdx.x;
+  if(i_pt<n_pts) {
+    const scalar_t e = exp(density[i_pt] + shift); // can be inf
+    exp_d[i_pt] = e;
+    alpha[i_pt] = 1 - pow(1 + e, -interval[i_pt]);
+  }
+}
+
 std::vector<torch::Tensor> raw2alpha_cuda(torch::Tensor density, const float shift, const float interval) {
 
   const int n_pts = density.size(0);
@@ -459,6 +474,29 @@ std::vector<torch::Tensor> raw2alpha_cuda(torch::Tensor density, const float shi
   return {exp_d, alpha};
 }
 
+std::vector<torch::Tensor> raw2alpha_nonuni_cuda(torch::Tensor density, const float shift, torch::Tensor interval) {
+
+  const int n_pts = density.size(0);
+  auto exp_d = torch::empty_like(density);
+  auto alpha = torch::empty_like(density);
+  if(n_pts==0) {
+    return {exp_d, alpha};
+  }
+
+  const int threads = 256;
+  const int blocks = (n_pts + threads - 1) / threads;
+
+  AT_DISPATCH_FLOATING_TYPES(density.type(), "raw2alpha_cuda", ([&] {
+    raw2alpha_nonuni_cuda_kernel<scalar_t><<<blocks, threads>>>(
+        density.data<scalar_t>(),
+        shift, interval.data<scalar_t>(), n_pts,
+        exp_d.data<scalar_t>(),
+        alpha.data<scalar_t>());
+  }));
+
+  return {exp_d, alpha};
+}
+
 template <typename scalar_t>
 __global__ void raw2alpha_backward_cuda_kernel(
     scalar_t* __restrict__ exp_d,
@@ -469,6 +507,19 @@ __global__ void raw2alpha_backward_cuda_kernel(
   const int i_pt = blockIdx.x * blockDim.x + threadIdx.x;
   if(i_pt<n_pts) {
     grad[i_pt] = min(exp_d[i_pt], 1e10) * pow(1+exp_d[i_pt], -interval-1) * interval * grad_back[i_pt];
+  }
+}
+
+template <typename scalar_t>
+__global__ void raw2alpha_nonuni_backward_cuda_kernel(
+    scalar_t* __restrict__ exp_d,
+    scalar_t* __restrict__ grad_back,
+    scalar_t* __restrict__ interval, const int n_pts,
+    scalar_t* __restrict__ grad) {
+
+  const int i_pt = blockIdx.x * blockDim.x + threadIdx.x;
+  if(i_pt<n_pts) {
+    grad[i_pt] = min(exp_d[i_pt], 1e10) * pow(1+exp_d[i_pt], -interval[i_pt]-1) * interval[i_pt] * grad_back[i_pt];
   }
 }
 
@@ -488,6 +539,28 @@ torch::Tensor raw2alpha_backward_cuda(torch::Tensor exp_d, torch::Tensor grad_ba
         exp_d.data<scalar_t>(),
         grad_back.data<scalar_t>(),
         interval, n_pts,
+        grad.data<scalar_t>());
+  }));
+
+  return grad;
+}
+
+torch::Tensor raw2alpha_nonuni_backward_cuda(torch::Tensor exp_d, torch::Tensor grad_back, torch::Tensor interval) {
+
+  const int n_pts = exp_d.size(0);
+  auto grad = torch::empty_like(exp_d);
+  if(n_pts==0) {
+    return grad;
+  }
+
+  const int threads = 256;
+  const int blocks = (n_pts + threads - 1) / threads;
+
+  AT_DISPATCH_FLOATING_TYPES(exp_d.type(), "raw2alpha_backward_cuda", ([&] {
+    raw2alpha_nonuni_backward_cuda_kernel<scalar_t><<<blocks, threads>>>(
+        exp_d.data<scalar_t>(),
+        grad_back.data<scalar_t>(),
+        interval.data<scalar_t>(), n_pts,
         grad.data<scalar_t>());
   }));
 

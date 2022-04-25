@@ -403,7 +403,7 @@ class Raw2Alpha(torch.autograd.Function):
               = 1 - exp(log(1 + exp(density + shift)) ^ (-interval))
               = 1 - (1 + exp(density + shift)) ^ (-interval)
         '''
-        exp, alpha = render_utils_cuda.raw2alpha(density, shift, interval);
+        exp, alpha = render_utils_cuda.raw2alpha(density, shift, interval)
         if density.requires_grad:
             ctx.save_for_backward(exp)
             ctx.interval = interval
@@ -419,6 +419,22 @@ class Raw2Alpha(torch.autograd.Function):
         exp = ctx.saved_tensors[0]
         interval = ctx.interval
         return render_utils_cuda.raw2alpha_backward(exp, grad_back.contiguous(), interval), None, None
+
+class Raw2Alpha_nonuni(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, density, shift, interval):
+        exp, alpha = render_utils_cuda.raw2alpha_nonuni(density, shift, interval)
+        if density.requires_grad:
+            ctx.save_for_backward(exp)
+            ctx.interval = interval
+        return alpha
+
+    @staticmethod
+    @torch.autograd.function.once_differentiable
+    def backward(ctx, grad_back):
+        exp = ctx.saved_tensors[0]
+        interval = ctx.interval
+        return render_utils_cuda.raw2alpha_nonuni_backward(exp, grad_back.contiguous(), interval), None, None
 
 class Alphas2Weights(torch.autograd.Function):
     @staticmethod

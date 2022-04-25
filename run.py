@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from lib import utils, dvgo, dbvgo, dmpigo
+from lib import utils, dvgo, dcvgo, dmpigo
 from lib.load_data import load_data
 
 
@@ -162,7 +162,7 @@ def load_everything(args, cfg):
     return data_dict
 
 
-def _compute_bbox_by_cam_frustrm_bounded(args, cfg, HW, Ks, poses, i_train, near, far):
+def _compute_bbox_by_cam_frustrm_bounded(cfg, HW, Ks, poses, i_train, near, far):
     xyz_min = torch.Tensor([np.inf, np.inf, np.inf])
     xyz_max = -xyz_min
     for (H, W), K, c2w in zip(HW[i_train], Ks[i_train], poses[i_train]):
@@ -178,13 +178,13 @@ def _compute_bbox_by_cam_frustrm_bounded(args, cfg, HW, Ks, poses, i_train, near
         xyz_max = torch.maximum(xyz_max, pts_nf.amax((0,1,2)))
     return xyz_min, xyz_max
 
-def _compute_bbox_by_cam_frustrm_unbounded(args, cfg, HW, Ks, poses, i_train, near, far):
+def _compute_bbox_by_cam_frustrm_unbounded(cfg, HW, poses, i_train):
     # Find a tightest cube that cover all camera centers
     cams_o = poses[i_train, :3, 3]
     cams_o_min = cams_o.amin(0)
     cams_o_max = cams_o.amax(0)
     center = (cams_o_min + cams_o_max) * 0.5
-    radius = (center - cams_o_min).max()
+    radius = (center - cams_o_min).max() * cfg.data.unbounded_inner_r
     xyz_min = center - radius
     xyz_max = center + radius
     return xyz_min, xyz_max
@@ -193,10 +193,10 @@ def compute_bbox_by_cam_frustrm(args, cfg, HW, Ks, poses, i_train, near, far, **
     print('compute_bbox_by_cam_frustrm: start')
     if cfg.data.unbounded_inward:
         xyz_min, xyz_max = _compute_bbox_by_cam_frustrm_unbounded(
-                args, cfg, HW, Ks, poses, i_train, near, far)
+                cfg, HW, poses, i_train)
     else:
         xyz_min, xyz_max = _compute_bbox_by_cam_frustrm_bounded(
-                args, cfg, HW, Ks, poses, i_train, near, far)
+                cfg, HW, Ks, poses, i_train, near, far)
     print('compute_bbox_by_cam_frustrm: xyz_min', xyz_min)
     print('compute_bbox_by_cam_frustrm: xyz_max', xyz_max)
     print('compute_bbox_by_cam_frustrm: finish')
@@ -239,7 +239,7 @@ def create_new_model(cfg, cfg_model, cfg_train, xyz_min, xyz_max, stage, coarse_
             **model_kwargs)
     elif cfg.data.unbounded_inward:
         print(f'scene_rep_reconstruction ({stage}): \033[96muse bi voxel grid (bounded + unbounded)\033[0m')
-        model = dbvgo.DirectBiVoxGO(
+        model = dcvgo.DirectContractedVoxGO(
             xyz_min=xyz_min, xyz_max=xyz_max,
             num_voxels=num_voxels,
             **model_kwargs)
@@ -260,7 +260,7 @@ def load_existed_model(args, cfg, cfg_train):
     if cfg.data.ndc:
         model_class = dmpigo.DirectMPIGO
     elif cfg.data.unbounded_inward:
-        model_class = dbvgo.DirectBiVoxGO
+        model_class = dcvgo.DirectContractedVoxGO
     else:
         model_class = dvgo.DirectVoxGO
     model = utils.load_model(model_class, reload_ckpt_path).to(device)
@@ -373,7 +373,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         if global_step in cfg_train.pg_scale:
             n_rest_scales = len(cfg_train.pg_scale)-cfg_train.pg_scale.index(global_step)-1
             cur_voxels = int(cfg_model.num_voxels / (2**n_rest_scales))
-            if isinstance(model, (dvgo.DirectVoxGO, dbvgo.DirectBiVoxGO)):
+            if isinstance(model, (dvgo.DirectVoxGO, dcvgo.DirectContractedVoxGO)):
                 model.scale_volume_grid(cur_voxels)
             elif isinstance(model, dmpigo.DirectMPIGO):
                 model.scale_volume_grid(cur_voxels, model.mpi_depth)
@@ -381,6 +381,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
                 raise NotImplementedError
             optimizer = utils.create_optimizer_or_freeze_model(model, cfg_train, global_step=0)
             model.act_shift -= cfg_train.decay_after_scale
+            torch.cuda.empty_cache()
 
         # random sample rays
         if cfg_train.ray_sampler in ['flatten', 'in_maskcache']:
@@ -417,6 +418,15 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             pout = render_result['alphainv_last'].clamp(1e-6, 1-1e-6)
             entropy_last_loss = -(pout*torch.log(pout) + (1-pout)*torch.log(1-pout)).mean()
             loss += cfg_train.weight_entropy_last * entropy_last_loss
+        if cfg_train.weight_entropy_last_mid > 0:
+            pin = render_result['wsum_mid'].clamp(1e-6, 1-1e-6)
+            entropy_mid_loss = -(pin*torch.log(pin) + (1-pin)*torch.log(1-pin)).mean()
+            loss += cfg_train.weight_entropy_last_mid * entropy_mid_loss
+        if cfg_train.weight_sparse > 0:
+            a_base = 1e-3
+            alpha = render_result['raw_alpha']
+            sparse_loss = (a_base / 2) - (a_base - alpha).clamp_min(0).pow(2) / (2*a_base)
+            loss += cfg_train.weight_sparse * sparse_loss.sum() / len(rays_o)
         if cfg_train.weight_rgbper > 0:
             rgbper = (render_result['raw_rgb'] - target[render_result['ray_id']]).pow(2).sum(-1)
             rgbper_loss = (rgbper * render_result['weights'].detach()).sum() / len(rays_o)
@@ -584,7 +594,7 @@ if __name__=='__main__':
         if cfg.data.ndc:
             model_class = dmpigo.DirectMPIGO
         elif cfg.data.unbounded_inward:
-            model_class = dbvgo.DirectBiVoxGO
+            model_class = dcvgo.DirectContractedVoxGO
         else:
             model_class = dvgo.DirectVoxGO
         model = utils.load_model(model_class, ckpt_path).to(device)
