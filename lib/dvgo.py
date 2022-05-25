@@ -186,9 +186,6 @@ class DirectVoxGO(torch.nn.Module):
         self.k0.scale_volume_grid(self.world_size)
 
         if np.prod(list(self.world_size)) <= 256**3:
-            mask_cache = grid.MaskGrid(
-                    path=self.mask_cache_path,
-                    mask_cache_thres=self.mask_cache_thres).to(self.xyz_min.device)
             self_grid_xyz = torch.stack(torch.meshgrid(
                 torch.linspace(self.xyz_min[0], self.xyz_max[0], self.world_size[0]),
                 torch.linspace(self.xyz_min[1], self.xyz_max[1], self.world_size[1]),
@@ -196,7 +193,7 @@ class DirectVoxGO(torch.nn.Module):
             ), -1)
             self_alpha = F.max_pool3d(self.activate_density(self.density.get_dense_grid()), kernel_size=3, padding=1, stride=1)[0,0]
             self.mask_cache = grid.MaskGrid(
-                    path=None, mask=mask_cache(self_grid_xyz) & (self_alpha>self.fast_color_thres),
+                    path=None, mask=self.mask_cache(self_grid_xyz) & (self_alpha>self.fast_color_thres),
                     xyz_min=self.xyz_min, xyz_max=self.xyz_max)
 
         print('dvgo: scale_volume_grid finish')
