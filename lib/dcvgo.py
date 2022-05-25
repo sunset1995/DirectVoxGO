@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from torch_scatter import segment_coo
 
 from . import grid
-from .dvgo import Raw2Alpha_nonuni, Alphas2Weights, render_utils_cuda
+from .dvgo import Raw2Alpha, Alphas2Weights, render_utils_cuda
 from .dmpigo import create_full_step_id
 
 
@@ -46,15 +46,14 @@ class DirectContractedVoxGO(nn.Module):
 
         # determine based grid resolution
         self.num_voxels_base = num_voxels_base
+        self.voxel_size_base = ((self.xyz_max - self.xyz_min).prod() / self.num_voxels_base).pow(1/3)
 
         # determine init grid resolution
         self._set_grid_resolution(num_voxels)
 
         # determine the density bias shift
-        self.interval_mul = 50
         self.alpha_init = alpha_init
-        interval = self.interval_mul * (2+2*self.bg_len) / self.world_len
-        self.register_buffer('act_shift', torch.FloatTensor([np.log(1/(1-alpha_init) ** (1/interval) - 1)]))
+        self.register_buffer('act_shift', torch.FloatTensor([np.log(1/(1-alpha_init) - 1)]))
         print('dcvgo: set density bias shift to', self.act_shift)
 
         # init density voxel grid
@@ -118,8 +117,11 @@ class DirectContractedVoxGO(nn.Module):
         self.voxel_size = ((self.xyz_max - self.xyz_min).prod() / num_voxels).pow(1/3)
         self.world_size = ((self.xyz_max - self.xyz_min) / self.voxel_size).long()
         self.world_len = self.world_size[0].item()
+        self.voxel_size_ratio = self.voxel_size / self.voxel_size_base
         print('dcvgo: voxel_size      ', self.voxel_size)
         print('dcvgo: world_size      ', self.world_size)
+        print('dcvgo: voxel_size_base ', self.voxel_size_base)
+        print('dcvgo: voxel_size_ratio', self.voxel_size_ratio)
 
     def get_kwargs(self):
         return {
@@ -128,6 +130,7 @@ class DirectContractedVoxGO(nn.Module):
             'num_voxels': self.num_voxels,
             'num_voxels_base': self.num_voxels_base,
             'alpha_init': self.alpha_init,
+            'voxel_size_ratio': self.voxel_size_ratio,
             'mask_cache_world_size': list(self.mask_cache.mask.shape),
             'fast_color_thres': self.fast_color_thres,
             'density_type': self.density_type,
@@ -148,35 +151,29 @@ class DirectContractedVoxGO(nn.Module):
         self.k0.scale_volume_grid(self.world_size)
 
         if np.prod(list(self.world_size)) <= 256**3:
-            self_alpha = F.max_pool3d(self.get_alpha_grid(), kernel_size=3, padding=1, stride=1)[0,0]
+            self_grid_xyz = torch.stack(torch.meshgrid(
+                torch.linspace(self.xyz_min[0], self.xyz_max[0], self.world_size[0]),
+                torch.linspace(self.xyz_min[1], self.xyz_max[1], self.world_size[1]),
+                torch.linspace(self.xyz_min[2], self.xyz_max[2], self.world_size[2]),
+            ), -1)
+            self_alpha = F.max_pool3d(self.activate_density(self.density.get_dense_grid()), kernel_size=3, padding=1, stride=1)[0,0]
             self.mask_cache = grid.MaskGrid(
-                path=None, mask=(self_alpha>self.fast_color_thres),
+                path=None, mask=self.mask_cache(self_grid_xyz) & (self_alpha>self.fast_color_thres),
                 xyz_min=self.xyz_min, xyz_max=self.xyz_max)
 
         print('dcvgo: scale_volume_grid finish')
 
-    def get_alpha_grid(self):
-        cache_grid_density = self.density.get_dense_grid()
-        assert (self.xyz_min == self.density.xyz_min).all() and \
-                (self.xyz_max == self.density.xyz_max).all()
-        cache_grid_xyz = torch.stack(torch.meshgrid(
-            torch.linspace(self.xyz_min[0], self.xyz_max[0], self.world_size[0]),
-            torch.linspace(self.xyz_min[1], self.xyz_max[1], self.world_size[1]),
-            torch.linspace(self.xyz_min[2], self.xyz_max[2], self.world_size[2]),
-        ), -1)
-        norm = cache_grid_xyz.abs().amax(-1)
-        interval = self.interval_mul * (2+2*self.bg_len) / self.world_len * torch.where(
-            norm<=1,
-            torch.ones_like(norm),
-            self.bg_len / (1+self.bg_len-norm + 1e-9)
-        )[None,None]
-        cache_grid_alpha = self.activate_density(cache_grid_density, interval)
-        return cache_grid_alpha
-
     @torch.no_grad()
     def update_occupancy_cache(self):
-        cache_grid_alpha = F.max_pool3d(self.get_alpha_grid(), kernel_size=3, padding=1, stride=1)[0,0]
         ori_p = self.mask_cache.mask.float().mean().item()
+        cache_grid_xyz = torch.stack(torch.meshgrid(
+            torch.linspace(self.xyz_min[0], self.xyz_max[0], self.mask_cache.mask.shape[0]),
+            torch.linspace(self.xyz_min[1], self.xyz_max[1], self.mask_cache.mask.shape[1]),
+            torch.linspace(self.xyz_min[2], self.xyz_max[2], self.mask_cache.mask.shape[2]),
+        ), -1)
+        cache_grid_density = self.density(cache_grid_xyz)[None,None]
+        cache_grid_alpha = self.activate_density(cache_grid_density)
+        cache_grid_alpha = F.max_pool3d(cache_grid_alpha, kernel_size=3, padding=1, stride=1)[0,0]
         self.mask_cache.mask &= (cache_grid_alpha > self.fast_color_thres)
         new_p = self.mask_cache.mask.float().mean().item()
         print(f'dcvgo: update mask_cache {ori_p:.4f} => {new_p:.4f}')
@@ -189,11 +186,10 @@ class DirectContractedVoxGO(nn.Module):
         w = weight * self.world_size.max() / 128
         self.k0.total_variation_add_grad(w, w, w, dense_mode)
 
-    def activate_density(self, density, interval):
-        assert interval is not None
-        interval = interval * self.interval_mul
+    def activate_density(self, density, interval=None):
+        interval = interval if interval is not None else self.voxel_size_ratio
         shape = density.shape
-        return Raw2Alpha_nonuni.apply(density.flatten(), self.act_shift, interval).reshape(shape)
+        return Raw2Alpha.apply(density.flatten(), self.act_shift, interval).reshape(shape)
 
     def sample_ray(self, ori_rays_o, ori_rays_d, stepsize, is_train=False, **render_kwargs):
         '''Sample query points on rays.
@@ -217,12 +213,7 @@ class DirectContractedVoxGO(nn.Module):
             (b_inner[1:] + b_inner[:-1]) * 0.5,
             (b_outer[1:] + b_outer[:-1]) * 0.5,
         ])
-        interval = torch.cat([
-            (b_inner[1:] - b_inner[:-1]),
-            (b_outer[1:] - b_outer[:-1]),
-        ])
         ray_pts = rays_o[:,None,:] + rays_d[:,None,:] * t[None,:,None]
-        #norm = ray_pts.norm(dim=-1, keepdim=True)
         norm = ray_pts.abs().amax(dim=-1, keepdim=True)
         inner_mask = (norm<=1)
         ray_pts = torch.where(
@@ -230,7 +221,7 @@ class DirectContractedVoxGO(nn.Module):
             ray_pts,
             ray_pts / norm * ((1+self.bg_len) - self.bg_len/norm)
         )
-        return ray_pts, inner_mask.squeeze(-1), t, interval
+        return ray_pts, inner_mask.squeeze(-1), t
 
     def forward(self, rays_o, rays_d, viewdirs, global_step=None, **render_kwargs):
         '''Volume rendering
@@ -247,8 +238,9 @@ class DirectContractedVoxGO(nn.Module):
         N = len(rays_o)
 
         # sample points on rays
-        ray_pts, inner_mask, t, interval = self.sample_ray(
+        ray_pts, inner_mask, t = self.sample_ray(
                 ori_rays_o=rays_o, ori_rays_d=rays_d, is_train=global_step is not None, **render_kwargs)
+        interval = render_kwargs['stepsize'] * self.voxel_size_ratio
         ray_id, step_id = create_full_step_id(ray_pts.shape[:2])
 
         # skip known free space
@@ -256,7 +248,6 @@ class DirectContractedVoxGO(nn.Module):
         ray_pts = ray_pts[mask]
         inner_mask = inner_mask[mask]
         t = t[None].repeat(N,1)[mask]
-        interval = interval[None].repeat(N,1)[mask]
         ray_id = ray_id[mask.flatten()]
         step_id = step_id[mask.flatten()]
 
@@ -268,7 +259,6 @@ class DirectContractedVoxGO(nn.Module):
             ray_pts = ray_pts[mask]
             inner_mask = inner_mask[mask]
             t = t[mask]
-            interval = interval[mask]
             ray_id = ray_id[mask]
             step_id = step_id[mask]
             alpha = alpha[mask]
@@ -280,7 +270,6 @@ class DirectContractedVoxGO(nn.Module):
             ray_pts = ray_pts[mask]
             inner_mask = inner_mask[mask]
             t = t[mask]
-            interval = interval[mask]
             ray_id = ray_id[mask]
             step_id = step_id[mask]
             alpha = alpha[mask]

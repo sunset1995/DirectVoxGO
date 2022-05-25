@@ -5,14 +5,15 @@ basedir = './logs/tanks_and_temple_unbounded'
 data = dict(
     dataset_type='nerfpp',
     inverse_y=True,
-    white_bkgd=False,
+    white_bkgd=True,
     unbounded_inward=True,
+    load2gpu_on_the_fly=True,
 )
 
 coarse_train = dict(N_iters=0)
 
 fine_train = dict(
-    N_iters=25000,
+    N_iters=30000,
     N_rand=4096,
     ray_sampler='flatten',
     weight_entropy_last_mid=0.001,

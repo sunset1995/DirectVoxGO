@@ -69,6 +69,7 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
 
     rgbs = []
     depths = []
+    bgmaps = []
     psnrs = []
     ssims = []
     lpips_alex = []
@@ -81,7 +82,7 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
         rays_o, rays_d, viewdirs = dvgo.get_rays_of_a_view(
                 H, W, K, c2w, ndc, inverse_y=render_kwargs['inverse_y'],
                 flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y)
-        keys = ['rgb_marched', 'depth']
+        keys = ['rgb_marched', 'depth', 'alphainv_last']
         rays_o = rays_o.flatten(0,-2)
         rays_d = rays_d.flatten(0,-2)
         viewdirs = viewdirs.flatten(0,-2)
@@ -95,9 +96,11 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
         }
         rgb = render_result['rgb_marched'].cpu().numpy()
         depth = render_result['depth'].cpu().numpy()
+        bgmap = render_result['alphainv_last'].cpu().numpy()
 
         rgbs.append(rgb)
         depths.append(depth)
+        bgmaps.append(bgmap)
         if i==0:
             print('Testing', rgb.shape)
 
@@ -126,8 +129,9 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
 
     rgbs = np.array(rgbs)
     depths = np.array(depths)
+    bgmaps = np.array(bgmaps)
 
-    return rgbs, depths
+    return rgbs, depths, bgmaps
 
 
 def seed_everything():
@@ -250,8 +254,6 @@ def create_new_model(cfg, cfg_model, cfg_train, xyz_min, xyz_max, stage, coarse_
             num_voxels=num_voxels,
             mask_cache_path=coarse_ckpt_path,
             **model_kwargs)
-        if cfg_model.maskout_near_cam_vox:
-            model.maskout_near_cam_vox(poses[i_train,:3,3], near)
     model = model.to(device)
     optimizer = utils.create_optimizer_or_freeze_model(model, cfg_train, global_step=0)
     return model, optimizer
@@ -299,6 +301,8 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         print(f'scene_rep_reconstruction ({stage}): train from scratch')
         model, optimizer = create_new_model(cfg, cfg_model, cfg_train, xyz_min, xyz_max, stage, coarse_ckpt_path)
         start = 0
+        if cfg_model.maskout_near_cam_vox:
+            model.maskout_near_cam_vox(poses[i_train,:3,3], near)
     else:
         print(f'scene_rep_reconstruction ({stage}): reload from {reload_ckpt_path}')
         model, optimizer, start = load_existed_model(args, cfg, cfg_train)
@@ -574,8 +578,8 @@ if __name__=='__main__':
         with torch.no_grad():
             ckpt_path = os.path.join(cfg.basedir, cfg.expname, 'coarse_last.tar')
             model = utils.load_model(dvgo.DirectVoxGO, ckpt_path).to(device)
-            alpha = model.activate_density(model.density).squeeze().cpu().numpy()
-            rgb = torch.sigmoid(model.k0).squeeze().permute(1,2,3,0).cpu().numpy()
+            alpha = model.activate_density(model.density.get_dense_grid()).squeeze().cpu().numpy()
+            rgb = torch.sigmoid(model.k0.get_dense_grid()).squeeze().permute(1,2,3,0).cpu().numpy()
         np.savez_compressed(args.export_coarse_only, alpha=alpha, rgb=rgb)
         print('done')
         sys.exit()
@@ -618,7 +622,7 @@ if __name__=='__main__':
     if args.render_train:
         testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_train_{ckpt_name}')
         os.makedirs(testsavedir, exist_ok=True)
-        rgbs, depths = render_viewpoints(
+        rgbs, depths, bgmaps = render_viewpoints(
                 render_poses=data_dict['poses'][data_dict['i_train']],
                 HW=data_dict['HW'][data_dict['i_train']],
                 Ks=data_dict['Ks'][data_dict['i_train']],
@@ -633,7 +637,7 @@ if __name__=='__main__':
     if args.render_test:
         testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_test_{ckpt_name}')
         os.makedirs(testsavedir, exist_ok=True)
-        rgbs, depths = render_viewpoints(
+        rgbs, depths, bgmaps = render_viewpoints(
                 render_poses=data_dict['poses'][data_dict['i_test']],
                 HW=data_dict['HW'][data_dict['i_test']],
                 Ks=data_dict['Ks'][data_dict['i_test']],
@@ -648,7 +652,7 @@ if __name__=='__main__':
     if args.render_video:
         testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_video_{ckpt_name}')
         os.makedirs(testsavedir, exist_ok=True)
-        rgbs, depths = render_viewpoints(
+        rgbs, depths, bgmaps = render_viewpoints(
                 render_poses=data_dict['render_poses'],
                 HW=data_dict['HW'][data_dict['i_test']][[0]].repeat(len(data_dict['render_poses']), 0),
                 Ks=data_dict['Ks'][data_dict['i_test']][[0]].repeat(len(data_dict['render_poses']), 0),
@@ -656,6 +660,7 @@ if __name__=='__main__':
                 savedir=testsavedir,
                 **render_viewpoints_kwargs)
         imageio.mimwrite(os.path.join(testsavedir, 'video.rgb.mp4'), utils.to8b(rgbs), fps=30, quality=8)
+        imageio.mimwrite(os.path.join(testsavedir, 'video.bgmap.mp4'), utils.to8b(bgmaps), fps=30, quality=8)
         imageio.mimwrite(os.path.join(testsavedir, 'video.depth.mp4'), utils.to8b(1 - depths / np.max(depths)), fps=30, quality=8)
 
     print('Done')
