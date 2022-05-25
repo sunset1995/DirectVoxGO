@@ -122,6 +122,9 @@ def load_nerfpp_data(basedir):
     for path in render_poses_path:
         render_poses.append(np.loadtxt(path).reshape(4,4))
     render_poses = torch.Tensor(render_poses)
+    render_K = np.loadtxt(glob.glob(os.path.join(basedir, 'camera_path', 'intrinsics', '*txt'))[0]).reshape(4,4)[:3,:3]
+    render_poses[:,:,0] *= K[0,0] / render_K[0,0]
+    render_poses[:,:,1] *= K[1,1] / render_K[1,1]
 
     return imgs, poses, render_poses, [H, W, focal], K, i_split
 
