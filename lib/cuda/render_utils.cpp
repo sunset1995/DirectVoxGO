@@ -8,7 +8,7 @@ std::vector<torch::Tensor> infer_t_minmax_cuda(
         torch::Tensor rays_o, torch::Tensor rays_d, torch::Tensor xyz_min, torch::Tensor xyz_max,
         const float near, const float far);
 
-torch::Tensor infer_n_samples_cuda(torch::Tensor t_min, torch::Tensor t_max, const float stepdist);
+torch::Tensor infer_n_samples_cuda(torch::Tensor rays_d, torch::Tensor t_min, torch::Tensor t_max, const float stepdist);
 
 std::vector<torch::Tensor> infer_ray_start_dir_cuda(torch::Tensor rays_o, torch::Tensor rays_d, torch::Tensor t_min);
 
@@ -57,10 +57,11 @@ std::vector<torch::Tensor> infer_t_minmax(
   return infer_t_minmax_cuda(rays_o, rays_d, xyz_min, xyz_max, near, far);
 }
 
-torch::Tensor infer_n_samples(torch::Tensor t_min, torch::Tensor t_max, const float stepdist) {
+torch::Tensor infer_n_samples(torch::Tensor rays_d, torch::Tensor t_min, torch::Tensor t_max, const float stepdist) {
+  CHECK_INPUT(rays_d);
   CHECK_INPUT(t_min);
   CHECK_INPUT(t_max);
-  return infer_n_samples_cuda(t_min, t_max, stepdist);
+  return infer_n_samples_cuda(rays_d, t_min, t_max, stepdist);
 }
 
 std::vector<torch::Tensor> infer_ray_start_dir(torch::Tensor rays_o, torch::Tensor rays_d, torch::Tensor t_min) {

@@ -159,7 +159,9 @@ def load_data(args):
 
 def inward_nearfar_heuristic(cam_o, ratio=0.05):
     dist = np.linalg.norm(cam_o[:,None] - cam_o, axis=-1)
-    far = dist.max()
+    far = dist.max()  # could be too small to exist the scene bbox
+                      # it is only used to determined scene bbox
+                      # lib/dvgo use 1e9 as far
     near = far * ratio
     return near, far
 

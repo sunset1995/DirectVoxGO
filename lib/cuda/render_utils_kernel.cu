@@ -36,6 +36,7 @@ __global__ void infer_t_minmax_cuda_kernel(
 
 template <typename scalar_t>
 __global__ void infer_n_samples_cuda_kernel(
+        scalar_t* __restrict__ rays_d,
         scalar_t* __restrict__ t_min,
         scalar_t* __restrict__ t_max,
         const float stepdist,
@@ -43,8 +44,13 @@ __global__ void infer_n_samples_cuda_kernel(
         int64_t* __restrict__ n_samples) {
   const int i_ray = blockIdx.x * blockDim.x + threadIdx.x;
   if(i_ray<n_rays) {
+    const int offset = i_ray * 3;
+    const float rnorm = sqrt(
+            rays_d[offset  ]*rays_d[offset  ] +\
+            rays_d[offset+1]*rays_d[offset+1] +\
+            rays_d[offset+2]*rays_d[offset+2]);
     // at least 1 point for easier implementation in the later sample_pts_on_rays_cuda
-    n_samples[i_ray] = max(ceil((t_max[i_ray]-t_min[i_ray]) / stepdist), 1.);
+    n_samples[i_ray] = max(ceil((t_max[i_ray]-t_min[i_ray]) * rnorm / stepdist), 1.);
   }
 }
 
@@ -97,13 +103,14 @@ std::vector<torch::Tensor> infer_t_minmax_cuda(
   return {t_min, t_max};
 }
 
-torch::Tensor infer_n_samples_cuda(torch::Tensor t_min, torch::Tensor t_max, const float stepdist) {
+torch::Tensor infer_n_samples_cuda(torch::Tensor rays_d, torch::Tensor t_min, torch::Tensor t_max, const float stepdist) {
   const int n_rays = t_min.size(0);
   auto n_samples = torch::empty({n_rays}, torch::dtype(torch::kInt64).device(torch::kCUDA));
   const int threads = 256;
   const int blocks = (n_rays + threads - 1) / threads;
   AT_DISPATCH_FLOATING_TYPES(t_min.type(), "infer_n_samples_cuda", ([&] {
     infer_n_samples_cuda_kernel<scalar_t><<<blocks, threads>>>(
+        rays_d.data<scalar_t>(),
         t_min.data<scalar_t>(),
         t_max.data<scalar_t>(),
         stepdist,
@@ -201,7 +208,7 @@ std::vector<torch::Tensor> sample_pts_on_rays_cuda(
 
   // Compute the number of points required.
   // Assign ray index and step index to each.
-  auto N_steps = infer_n_samples_cuda(t_min, t_max, stepdist);
+  auto N_steps = infer_n_samples_cuda(rays_d, t_min, t_max, stepdist);
   auto N_steps_cumsum = N_steps.cumsum(0);
   const int total_len = N_steps.sum().item<int>();
   auto ray_id = torch::zeros({total_len}, torch::dtype(torch::kInt64).device(torch::kCUDA));

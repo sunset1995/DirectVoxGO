@@ -196,7 +196,6 @@ class DirectContractedVoxGO(nn.Module):
         All the output points are sorted from near to far.
         Input:
             rays_o, rayd_d:   both in [N, 3] indicating ray configurations.
-            near, far:        the near and far distance of the rays.
             stepsize:         the number of voxels of each sample step.
         Output:
             ray_pts:          [M, 3] storing all the sampled points.

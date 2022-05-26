@@ -212,6 +212,7 @@ class DirectVoxGO(torch.nn.Module):
 
     def voxel_count_views(self, rays_o_tr, rays_d_tr, imsz, near, far, stepsize, downrate=1, irregular_shape=False):
         print('dvgo: voxel_count_views start')
+        far = 1e9  # the given far can be too small while rays stop when hitting scene bbox
         eps_time = time.time()
         N_samples = int(np.linalg.norm(np.array(self.world_size.cpu())+1) / stepsize) + 1
         rng = torch.arange(N_samples)[None].float()
@@ -257,6 +258,7 @@ class DirectVoxGO(torch.nn.Module):
 
     def hit_coarse_geo(self, rays_o, rays_d, near, far, stepsize, **render_kwargs):
         '''Check whether the rays hit the solved coarse geometry or not'''
+        far = 1e9  # the given far can be too small while rays stop when hitting scene bbox
         shape = rays_o.shape[:-1]
         rays_o = rays_o.reshape(-1, 3).contiguous()
         rays_d = rays_d.reshape(-1, 3).contiguous()
@@ -280,6 +282,7 @@ class DirectVoxGO(torch.nn.Module):
             ray_id:           [M]    the index of the ray of each point.
             step_id:          [M]    the i'th step on a ray of each point.
         '''
+        far = 1e9  # the given far can be too small while rays stop when hitting scene bbox
         rays_o = rays_o.contiguous()
         rays_d = rays_d.contiguous()
         stepdist = stepsize * self.voxel_size
