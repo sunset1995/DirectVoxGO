@@ -17,6 +17,7 @@ data = dict(
     load2gpu_on_the_fly=False,    # do not load all images into gpu (to save gpu memory)
     testskip=1,                   # subsample testset to preview results
     white_bkgd=False,             # use white background (note that some dataset don't provide alpha and with blended bg color)
+    rand_bkgd=False,              # use random background during training
     half_res=False,               # [TODO]
 
     # Below are forward-facing llff specific settings.

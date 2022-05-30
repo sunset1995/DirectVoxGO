@@ -222,7 +222,7 @@ class DirectContractedVoxGO(nn.Module):
         )
         return ray_pts, inner_mask.squeeze(-1), t
 
-    def forward(self, rays_o, rays_d, viewdirs, global_step=None, **render_kwargs):
+    def forward(self, rays_o, rays_d, viewdirs, global_step=None, is_train=False, **render_kwargs):
         '''Volume rendering
         @rays_o:   [N, 3] the starting point of the N shooting rays.
         @rays_d:   [N, 3] the shooting direction of the N rays.
@@ -294,7 +294,10 @@ class DirectContractedVoxGO(nn.Module):
                 index=ray_id,
                 out=torch.zeros([N, 3]),
                 reduce='sum')
-        rgb_marched += (alphainv_last.unsqueeze(-1) * render_kwargs['bg'])
+        if render_kwargs.get('rand_bkgd', False) and is_train:
+            rgb_marched += (alphainv_last.unsqueeze(-1) * torch.rand_like(rgb_marched))
+        else:
+            rgb_marched += (alphainv_last.unsqueeze(-1) * render_kwargs['bg'])
         wsum_mid = segment_coo(
                 src=weights[inner_mask],
                 index=ray_id[inner_mask],

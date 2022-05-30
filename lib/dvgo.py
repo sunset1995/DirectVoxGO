@@ -270,7 +270,7 @@ class DirectVoxGO(torch.nn.Module):
         hit[ray_id[mask_inbbox][self.mask_cache(ray_pts[mask_inbbox])]] = 1
         return hit.reshape(shape)
 
-    def sample_ray(self, rays_o, rays_d, near, far, stepsize, is_train=False, **render_kwargs):
+    def sample_ray(self, rays_o, rays_d, near, far, stepsize, **render_kwargs):
         '''Sample query points on rays.
         All the output points are sorted from near to far.
         Input:
@@ -307,7 +307,7 @@ class DirectVoxGO(torch.nn.Module):
 
         # sample points on rays
         ray_pts, ray_id, step_id = self.sample_ray(
-                rays_o=rays_o, rays_d=rays_d, is_train=global_step is not None, **render_kwargs)
+                rays_o=rays_o, rays_d=rays_d, **render_kwargs)
         interval = render_kwargs['stepsize'] * self.voxel_size_ratio
 
         # skip known free space

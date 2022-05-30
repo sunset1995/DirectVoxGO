@@ -6,6 +6,7 @@ data = dict(
     dataset_type='nerfpp',
     inverse_y=True,
     white_bkgd=True,
+    rand_bkgd=True,
     unbounded_inward=True,
     load2gpu_on_the_fly=True,
 )

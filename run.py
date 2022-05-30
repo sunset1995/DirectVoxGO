@@ -312,6 +312,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         'near': data_dict['near'],
         'far': data_dict['far'],
         'bg': 1 if cfg.data.white_bkgd else 0,
+        'rand_bkgd': cfg.data.rand_bkgd,
         'stepsize': cfg_model.stepsize,
         'inverse_y': cfg.data.inverse_y,
         'flip_x': cfg.data.flip_x,
@@ -412,7 +413,10 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             viewdirs = viewdirs.to(device)
 
         # volume rendering
-        render_result = model(rays_o, rays_d, viewdirs, global_step=global_step, **render_kwargs)
+        render_result = model(
+            rays_o, rays_d, viewdirs,
+            global_step=global_step, is_train=True,
+            **render_kwargs)
 
         # gradient descent step
         optimizer.zero_grad(set_to_none=True)
