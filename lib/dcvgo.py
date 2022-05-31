@@ -150,7 +150,7 @@ class DirectContractedVoxGO(nn.Module):
         self.density.scale_volume_grid(self.world_size)
         self.k0.scale_volume_grid(self.world_size)
 
-        if np.prod(list(self.world_size)) <= 256**3:
+        if np.prod(self.world_size.tolist()) <= 256**3:
             self_grid_xyz = torch.stack(torch.meshgrid(
                 torch.linspace(self.xyz_min[0], self.xyz_max[0], self.world_size[0]),
                 torch.linspace(self.xyz_min[1], self.xyz_max[1], self.world_size[1]),
@@ -213,7 +213,7 @@ class DirectContractedVoxGO(nn.Module):
             (b_outer[1:] + b_outer[:-1]) * 0.5,
         ])
         ray_pts = rays_o[:,None,:] + rays_d[:,None,:] * t[None,:,None]
-        norm = ray_pts.abs().amax(dim=-1, keepdim=True)
+        norm = ray_pts.norm(dim=-1, keepdim=True)
         inner_mask = (norm<=1)
         ray_pts = torch.where(
             inner_mask,
