@@ -1,6 +1,6 @@
 # DirectVoxGO
 
-DirectVoxGO (Direct Voxel Grid Optimization, CVPR2022, see [our paper](https://arxiv.org/abs/2111.11215)) reconstructs a scene representation from a set of calibrated images capturing the scene. **The current version have improved speed by 1.8\~3.5x and supported forward-facing scenes comparing to the initial publication.**
+Direct Voxel Grid Optimization (CVPR2022 Oral, see [project page](https://sunset1995.github.io/dvgo/) and [our paper](https://arxiv.org/abs/2111.11215)) reconstructs a scene representation from a set of calibrated images capturing the scene. **The current version have improved speed by 1.8\~3.5x and supported forward-facing scenes comparing to the initial publication.**
 - **NeRF-comparable quality** for synthesizing novel views of inward-bounded scene.
 - **Super-fast convergence**: Our **`5 mins/scene`** vs. NeRF's `10~20+ hrs/scene`.
 - **No cross-scene pre-training required**: We optimize each scene from scratch.
@@ -38,6 +38,8 @@ pip install -r requirements.txt
   - `mmcv`: config system.
   - `opencv-python`: image processing.
   - `imageio`, `imageio-ffmpeg`: images and videos I/O.
+  - `Ninja`: to build the newly implemented torch extention just-in-time.
+  - `einops`: torch tensor shaping with pretty api.
 </details>
 
 
