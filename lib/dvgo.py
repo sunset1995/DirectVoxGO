@@ -160,10 +160,8 @@ class DirectVoxGO(torch.nn.Module):
         }
 
     @torch.no_grad()
-    def maskout_near_cam_vox(self, cam_o, near):
-        if not isinstance(self.density, grid.DenseGrid):
-            print('dvgo: maskout_near_cam_vox skip as grid is not dense')
-            return
+    def maskout_near_cam_vox(self, co, near_clip):
+        # maskout grid points that between cameras and their near planes
         self_grid_xyz = torch.stack(torch.meshgrid(
             torch.linspace(self.xyz_min[0], self.xyz_max[0], self.world_size[0]),
             torch.linspace(self.xyz_min[1], self.xyz_max[1], self.world_size[1]),
@@ -173,7 +171,7 @@ class DirectVoxGO(torch.nn.Module):
             (self_grid_xyz.unsqueeze(-2) - co).pow(2).sum(-1).sqrt().amin(-1)
             for co in cam_o.split(100)  # for memory saving
         ]).amin(0)
-        self.density.grid[nearest_dist[None,None] <= near] = -100
+        self.density.grid[nearest_dist[None,None] <= near_clip] = -100
 
     @torch.no_grad()
     def scale_volume_grid(self, num_voxels):

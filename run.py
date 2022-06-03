@@ -39,7 +39,7 @@ def config_parser():
     parser.add_argument("--render_test", action='store_true')
     parser.add_argument("--render_train", action='store_true')
     parser.add_argument("--render_video", action='store_true')
-    parser.add_argument("--render_video_factor", type=int, default=0,
+    parser.add_argument("--render_video_factor", type=float, default=0,
                         help='downsampling factor to speed up rendering, set 4 or 8 for fast preview')
     parser.add_argument("--eval_ssim", action='store_true')
     parser.add_argument("--eval_lpips_alex", action='store_true')
@@ -64,8 +64,8 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
     if render_factor!=0:
         HW = np.copy(HW)
         Ks = np.copy(Ks)
-        HW //= render_factor
-        Ks[:, :2, :3] //= render_factor
+        HW = (HW/render_factor).astype(int)
+        Ks[:, :2, :3] /= render_factor
 
     rgbs = []
     depths = []
@@ -150,7 +150,7 @@ def load_everything(args, cfg):
 
     # remove useless field
     kept_keys = {
-            'hwf', 'HW', 'Ks', 'near', 'far',
+            'hwf', 'HW', 'Ks', 'near', 'far', 'near_clip',
             'i_train', 'i_val', 'i_test', 'irregular_shape',
             'poses', 'render_poses', 'images'}
     for k in list(data_dict.keys()):
@@ -182,13 +182,20 @@ def _compute_bbox_by_cam_frustrm_bounded(cfg, HW, Ks, poses, i_train, near, far)
         xyz_max = torch.maximum(xyz_max, pts_nf.amax((0,1,2)))
     return xyz_min, xyz_max
 
-def _compute_bbox_by_cam_frustrm_unbounded(cfg, HW, poses, i_train):
+def _compute_bbox_by_cam_frustrm_unbounded(cfg, HW, Ks, poses, i_train, near_clip):
     # Find a tightest cube that cover all camera centers
-    cams_o = poses[i_train, :3, 3]
-    cams_o_min = cams_o.amin(0)
-    cams_o_max = cams_o.amax(0)
-    center = (cams_o_min + cams_o_max) * 0.5
-    radius = (center - cams_o_min).max() * cfg.data.unbounded_inner_r
+    xyz_min = torch.Tensor([np.inf, np.inf, np.inf])
+    xyz_max = -xyz_min
+    for (H, W), K, c2w in zip(HW[i_train], Ks[i_train], poses[i_train]):
+        rays_o, rays_d, viewdirs = dvgo.get_rays_of_a_view(
+                H=H, W=W, K=K, c2w=c2w,
+                ndc=cfg.data.ndc, inverse_y=cfg.data.inverse_y,
+                flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y)
+        pts = rays_o + rays_d * near_clip
+        xyz_min = torch.minimum(xyz_min, pts.amin((0,1)))
+        xyz_max = torch.maximum(xyz_max, pts.amax((0,1)))
+    center = (xyz_min + xyz_max) * 0.5
+    radius = (center - xyz_min).max() * cfg.data.unbounded_inner_r
     xyz_min = center - radius
     xyz_max = center + radius
     return xyz_min, xyz_max
@@ -197,7 +204,7 @@ def compute_bbox_by_cam_frustrm(args, cfg, HW, Ks, poses, i_train, near, far, **
     print('compute_bbox_by_cam_frustrm: start')
     if cfg.data.unbounded_inward:
         xyz_min, xyz_max = _compute_bbox_by_cam_frustrm_unbounded(
-                cfg, HW, poses, i_train)
+                cfg, HW, Ks, poses, i_train, kwargs.get('near_clip', None))
     else:
         xyz_min, xyz_max = _compute_bbox_by_cam_frustrm_bounded(
                 cfg, HW, Ks, poses, i_train, near, far)
@@ -242,7 +249,7 @@ def create_new_model(cfg, cfg_model, cfg_train, xyz_min, xyz_max, stage, coarse_
             num_voxels=num_voxels,
             **model_kwargs)
     elif cfg.data.unbounded_inward:
-        print(f'scene_rep_reconstruction ({stage}): \033[96muse bi voxel grid (bounded + unbounded)\033[0m')
+        print(f'scene_rep_reconstruction ({stage}): \033[96muse contraced voxel grid (covering unbounded)\033[0m')
         model = dcvgo.DirectContractedVoxGO(
             xyz_min=xyz_min, xyz_max=xyz_max,
             num_voxels=num_voxels,
@@ -258,7 +265,7 @@ def create_new_model(cfg, cfg_model, cfg_train, xyz_min, xyz_max, stage, coarse_
     optimizer = utils.create_optimizer_or_freeze_model(model, cfg_train, global_step=0)
     return model, optimizer
 
-def load_existed_model(args, cfg, cfg_train):
+def load_existed_model(args, cfg, cfg_train, reload_ckpt_path):
     if cfg.data.ndc:
         model_class = dmpigo.DirectMPIGO
     elif cfg.data.unbounded_inward:
@@ -305,7 +312,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             model.maskout_near_cam_vox(poses[i_train,:3,3], near)
     else:
         print(f'scene_rep_reconstruction ({stage}): reload from {reload_ckpt_path}')
-        model, optimizer, start = load_existed_model(args, cfg, cfg_train)
+        model, optimizer, start = load_existed_model(args, cfg, cfg_train, reload_ckpt_path)
 
     # init rendering setup
     render_kwargs = {
@@ -431,10 +438,18 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             entropy_mid_loss = -(pin*torch.log(pin) + (1-pin)*torch.log(1-pin)).mean()
             loss += cfg_train.weight_entropy_last_mid * entropy_mid_loss
         if cfg_train.weight_sparse > 0:
+            # Pulling down the alpha if it is below a_base
             a_base = 1e-3
             alpha = render_result['raw_alpha']
             sparse_loss = (a_base / 2) - (a_base - alpha).clamp_min(0).pow(2) / (2*a_base)
             loss += cfg_train.weight_sparse * sparse_loss.sum() / len(rays_o)
+        if cfg_train.weight_nearclip > 0:
+            near_thres = data_dict['near_clip'] / model.scene_radius[0].item()
+            near_mask = (render_result['t'] < near_thres)
+            density = render_result['raw_density'][near_mask]
+            if len(density):
+                nearclip_loss = (density - density.detach()).sum()
+                loss += cfg_train.weight_nearclip * nearclip_loss
         if cfg_train.weight_rgbper > 0:
             rgbper = (render_result['raw_rgb'] - target[render_result['ray_id']]).pow(2).sum(-1)
             rgbper_loss = (rgbper * render_result['weights'].detach()).sum() / len(rays_o)
@@ -563,6 +578,8 @@ if __name__=='__main__':
         xyz_min, xyz_max = compute_bbox_by_cam_frustrm(args=args, cfg=cfg, **data_dict)
         poses, HW, Ks, i_train = data_dict['poses'], data_dict['HW'], data_dict['Ks'], data_dict['i_train']
         near, far = data_dict['near'], data_dict['far']
+        if data_dict['near_clip'] is not None:
+            near = data_dict['near_clip']
         cam_lst = []
         for c2w, (H, W), K in zip(poses[i_train], HW[i_train], Ks[i_train]):
             rays_o, rays_d, viewdirs = dvgo.get_rays_of_a_view(

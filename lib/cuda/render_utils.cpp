@@ -12,6 +12,8 @@ torch::Tensor infer_n_samples_cuda(torch::Tensor rays_d, torch::Tensor t_min, to
 
 std::vector<torch::Tensor> infer_ray_start_dir_cuda(torch::Tensor rays_o, torch::Tensor rays_d, torch::Tensor t_min);
 
+torch::Tensor cumdist_thres_cuda(torch::Tensor dist, float thres);
+
 std::vector<torch::Tensor> sample_pts_on_rays_cuda(
         torch::Tensor rays_o, torch::Tensor rays_d,
         torch::Tensor xyz_min, torch::Tensor xyz_max,
@@ -69,6 +71,11 @@ std::vector<torch::Tensor> infer_ray_start_dir(torch::Tensor rays_o, torch::Tens
   CHECK_INPUT(rays_d);
   CHECK_INPUT(t_min);
   return infer_ray_start_dir_cuda(rays_o, rays_d, t_min);
+}
+
+torch::Tensor cumdist_thres(torch::Tensor dist, float thres) {
+  CHECK_INPUT(dist);
+  return cumdist_thres_cuda(dist, thres);
 }
 
 std::vector<torch::Tensor> sample_pts_on_rays(
@@ -171,6 +178,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("infer_t_minmax", &infer_t_minmax, "Inference t_min and t_max of ray-bbox intersection");
   m.def("infer_n_samples", &infer_n_samples, "Inference the number of points to sample on each ray");
   m.def("infer_ray_start_dir", &infer_ray_start_dir, "Inference the starting point and shooting direction of each ray");
+  m.def("cumdist_thres", &cumdist_thres, "Generate mask for cumulative dist.");
   m.def("sample_pts_on_rays", &sample_pts_on_rays, "Sample points on rays");
   m.def("sample_ndc_pts_on_rays", &sample_ndc_pts_on_rays, "Sample points on rays");
   m.def("sample_bg_pts_on_rays", &sample_bg_pts_on_rays, "Sample points on bg");

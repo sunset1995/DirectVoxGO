@@ -19,6 +19,7 @@ data = dict(
     white_bkgd=False,             # use white background (note that some dataset don't provide alpha and with blended bg color)
     rand_bkgd=False,              # use random background during training
     half_res=False,               # [TODO]
+    movie_render_kwargs=dict(),
 
     # Below are forward-facing llff specific settings.
     ndc=False,                    # use ndc coordinate (only for forward-facing; not support yet)
@@ -50,6 +51,7 @@ coarse_train = dict(
     weight_entropy_last=0.01,     # weight of background entropy loss
     weight_entropy_last_mid=0,
     weight_sparse=0,
+    weight_nearclip=0,
     weight_rgbper=0.1,            # weight of per-point rgb loss
     tv_every=1,                   # count total variation loss every tv_every step
     tv_after=0,                   # count total variation loss from tv_from step

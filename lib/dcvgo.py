@@ -242,6 +242,12 @@ class DirectContractedVoxGO(nn.Module):
         interval = render_kwargs['stepsize'] * self.voxel_size_ratio
         ray_id, step_id = create_full_step_id(ray_pts.shape[:2])
 
+        # skip oversampled points outside scene bbox
+        mask = inner_mask.clone()
+        dist_thres = 2 * (1+self.bg_len) / self.world_len * render_kwargs['stepsize'] * 0.95
+        dist = (ray_pts[:,1:] - ray_pts[:,:-1]).norm(dim=-1)
+        mask[:, 1:] |= render_utils_cuda.cumdist_thres(dist, dist_thres)
+
         # skip known free space
         mask = self.mask_cache(ray_pts)
         ray_pts = ray_pts[mask]
@@ -260,6 +266,7 @@ class DirectContractedVoxGO(nn.Module):
             t = t[mask]
             ray_id = ray_id[mask]
             step_id = step_id[mask]
+            density = density[mask]
             alpha = alpha[mask]
 
         # compute accumulated transmittance
@@ -271,6 +278,7 @@ class DirectContractedVoxGO(nn.Module):
             t = t[mask]
             ray_id = ray_id[mask]
             step_id = step_id[mask]
+            density = density[mask]
             alpha = alpha[mask]
             weights = weights[mask]
 
@@ -308,10 +316,12 @@ class DirectContractedVoxGO(nn.Module):
             'weights': weights,
             'wsum_mid': wsum_mid,
             'rgb_marched': rgb_marched,
+            'raw_density': density,
             'raw_alpha': alpha,
             'raw_rgb': rgb,
             'ray_id': ray_id,
             'step_id': step_id,
+            't': t,
         })
 
         if render_kwargs.get('render_depth', False):

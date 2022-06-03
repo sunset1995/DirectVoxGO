@@ -1,6 +1,7 @@
 import numpy as np
 import os, imageio
 import torch
+import scipy
 
 ########## Slightly modified version of LLFF data loading code
 ##########  see https://github.com/Fyusion/LLFF for original
@@ -118,6 +119,7 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True, lo
         factor = 1
 
     imgdir = os.path.join(basedir, 'images' + sfx)
+    print(f'Loading images from {imgdir}')
     if not os.path.exists(imgdir):
         print( imgdir, 'does not exist, returning' )
         return
@@ -214,6 +216,31 @@ def recenter_poses(poses):
     return poses
 
 
+def rerotate_poses(poses):
+    poses = np.copy(poses)
+    centroid = poses[:,:3,3].mean(0)
+
+    poses[:,:3,3] = poses[:,:3,3] - centroid
+
+    # Find the minimum pca vector with minimum eigen value
+    x = poses[:,:,3]
+    mu = x.mean(0)
+    cov = np.cov((x-mu).T)
+    ev , eig = np.linalg.eig(cov)
+    cams_up = eig[:,np.argmin(ev)]
+    if cams_up[1] < 0:
+        cams_up = -cams_up
+
+    # Find rotation matrix that align cams_up with [0,1,0]
+    R = scipy.spatial.transform.Rotation.align_vectors(
+            [[0,1,0]], cams_up[None])[0].as_matrix()
+
+    # Apply rotation and add back the centroid position
+    poses[:,:3,:3] = R @ poses[:,:3,:3]
+    poses[:,:3,[3]] = R @ poses[:,:3,[3]]
+    poses[:,:3,3] = poses[:,:3,3] + centroid
+    return poses
+
 #####################
 
 
@@ -243,42 +270,23 @@ def spherify_poses(poses, bds, depths):
 
     poses_reset = np.linalg.inv(p34_to_44(c2w[None])) @ p34_to_44(poses[:,:3,:4])
 
-    rad = np.sqrt(np.mean(np.sum(np.square(poses_reset[:,:3,3]), -1)))
+    radius = np.sqrt(np.mean(np.sum(np.square(poses_reset[:,:3,3]), -1)))
 
-    sc = 1./rad
+    sc = 1./radius
     poses_reset[:,:3,3] *= sc
     bds *= sc
-    rad *= sc
+    radius *= sc
     depths *= sc
 
-    centroid = np.mean(poses_reset[:,:3,3], 0)
-    zh = centroid[2]
-    radcircle = np.sqrt(rad**2-zh**2)
-    new_poses = []
-
-    for th in np.linspace(0.,2.*np.pi, 120):
-
-        camorigin = np.array([radcircle * np.cos(th), radcircle * np.sin(th), zh])
-        up = np.array([0,0,-1.])
-
-        vec2 = normalize(camorigin)
-        vec0 = normalize(np.cross(vec2, up))
-        vec1 = normalize(np.cross(vec2, vec0))
-        pos = camorigin
-        p = np.stack([vec0, vec1, vec2, pos], 1)
-
-        new_poses.append(p)
-
-    new_poses = np.stack(new_poses, 0)
-
-    new_poses = np.concatenate([new_poses, np.broadcast_to(poses[0,:3,-1:], new_poses[:,:3,-1:].shape)], -1)
     poses_reset = np.concatenate([poses_reset[:,:3,:4], np.broadcast_to(poses[0,:3,-1:], poses_reset[:,:3,-1:].shape)], -1)
 
-    return poses_reset, new_poses, bds, depths
+    return poses_reset, radius, bds, depths
 
 
 def load_llff_data(basedir, factor=8, width=None, height=None,
-                   recenter=True, bd_factor=.75, spherify=False, path_zflat=False, load_depths=False):
+                   recenter=True, rerotate=True,
+                   bd_factor=.75, spherify=False, path_zflat=False, load_depths=False,
+                   movie_render_kwargs={}):
 
     poses, bds, imgs, *depths = _load_data(basedir, factor=factor, width=width, height=height,
                                            load_depths=load_depths) # factor=8 downsamples original imgs by 8x
@@ -305,7 +313,41 @@ def load_llff_data(basedir, factor=8, width=None, height=None,
         poses = recenter_poses(poses)
 
     if spherify:
-        poses, render_poses, bds, depths = spherify_poses(poses, bds, depths)
+        poses, radius, bds, depths = spherify_poses(poses, bds, depths)
+        if rerotate:
+            poses = rerotate_poses(poses)
+
+        ### generate spiral poses for rendering fly-through movie
+        centroid = poses[:,:3,3].mean(0)
+        radcircle = movie_render_kwargs.get('scale_r', 1) * np.linalg.norm(poses[:,:3,3] - centroid, axis=-1).mean()
+        centroid[0] += movie_render_kwargs.get('shift_x', 0)
+        centroid[1] += movie_render_kwargs.get('shift_y', 0)
+        centroid[2] += movie_render_kwargs.get('shift_z', 0)
+        new_up_rad = movie_render_kwargs.get('pitch_deg', 0) * np.pi / 180
+        target_y = radcircle * np.tan(new_up_rad)
+
+        render_poses = []
+
+        for th in np.linspace(0., 2.*np.pi, 200):
+            camorigin = np.array([radcircle * np.cos(th), 0, radcircle * np.sin(th)])
+            up = np.array([0,-1.,0])
+            vec2 = normalize(camorigin)
+            vec0 = normalize(np.cross(vec2, up))
+            vec1 = normalize(np.cross(vec2, vec0))
+            pos = camorigin + centroid
+            # rotate to align with new pitch rotation
+            lookat = -vec2
+            lookat[1] = target_y
+            lookat = normalize(lookat)
+            vec2 = -lookat
+            vec1 = normalize(np.cross(vec2, vec0))
+
+            p = np.stack([vec0, vec1, vec2, pos], 1)
+
+            render_poses.append(p)
+
+        render_poses = np.stack(render_poses, 0)
+        render_poses = np.concatenate([render_poses, np.broadcast_to(poses[0,:3,-1:], render_poses[:,:3,-1:].shape)], -1)
 
     else:
 
