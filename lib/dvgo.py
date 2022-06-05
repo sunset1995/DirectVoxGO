@@ -160,7 +160,7 @@ class DirectVoxGO(torch.nn.Module):
         }
 
     @torch.no_grad()
-    def maskout_near_cam_vox(self, co, near_clip):
+    def maskout_near_cam_vox(self, cam_o, near_clip):
         # maskout grid points that between cameras and their near planes
         self_grid_xyz = torch.stack(torch.meshgrid(
             torch.linspace(self.xyz_min[0], self.xyz_max[0], self.world_size[0]),

@@ -71,7 +71,38 @@ def load_data_split(split_dir, skip=1, try_load_min_depth=True, only_img_files=F
     return intrinsics_files, pose_files, img_files, mask_files, mindepth_files
 
 
-def load_nerfpp_data(basedir):
+def rerotate_poses(poses, render_poses):
+    poses = np.copy(poses)
+    centroid = poses[:,:3,3].mean(0)
+
+    poses[:,:3,3] = poses[:,:3,3] - centroid
+
+    # Find the minimum pca vector with minimum eigen value
+    x = poses[:,:3,3]
+    mu = x.mean(0)
+    cov = np.cov((x-mu).T)
+    ev , eig = np.linalg.eig(cov)
+    cams_up = eig[:,np.argmin(ev)]
+    if cams_up[1] < 0:
+        cams_up = -cams_up
+
+    # Find rotation matrix that align cams_up with [0,1,0]
+    R = scipy.spatial.transform.Rotation.align_vectors(
+            [[0,-1,0]], cams_up[None])[0].as_matrix()
+
+    # Apply rotation and add back the centroid position
+    poses[:,:3,:3] = R @ poses[:,:3,:3]
+    poses[:,:3,[3]] = R @ poses[:,:3,[3]]
+    poses[:,:3,3] = poses[:,:3,3] + centroid
+    render_poses = np.copy(render_poses)
+    render_poses[:,:3,3] = render_poses[:,:3,3] - centroid
+    render_poses[:,:3,:3] = R @ render_poses[:,:3,:3]
+    render_poses[:,:3,[3]] = R @ render_poses[:,:3,[3]]
+    render_poses[:,:3,3] = render_poses[:,:3,3] + centroid
+    return poses, render_poses
+
+
+def load_nerfpp_data(basedir, rerotate=True):
     tr_K, tr_c2w, tr_im_path = load_data_split(os.path.join(basedir, 'train'))[:3]
     te_K, te_c2w, te_im_path = load_data_split(os.path.join(basedir, 'test'))[:3]
     assert len(tr_K) == len(tr_c2w) and len(tr_K) == len(tr_im_path)
@@ -121,10 +152,14 @@ def load_nerfpp_data(basedir):
     render_poses = []
     for path in render_poses_path:
         render_poses.append(np.loadtxt(path).reshape(4,4))
-    render_poses = torch.Tensor(render_poses)
+    render_poses = np.array(render_poses)
     render_K = np.loadtxt(glob.glob(os.path.join(basedir, 'camera_path', 'intrinsics', '*txt'))[0]).reshape(4,4)[:3,:3]
     render_poses[:,:,0] *= K[0,0] / render_K[0,0]
     render_poses[:,:,1] *= K[1,1] / render_K[1,1]
+    if rerotate:
+        poses, render_poses = rerotate_poses(poses, render_poses)
+
+    render_poses = torch.Tensor(render_poses)
 
     return imgs, poses, render_poses, [H, W, focal], K, i_split
 

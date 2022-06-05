@@ -127,7 +127,8 @@ def load_data(args):
         print('Loaded nerf_pp', images.shape, hwf, args.datadir)
         i_train, i_val, i_test = i_split
 
-        near, far = inward_nearfar_heuristic(poses[i_train, :3, 3], ratio=0)
+        near_clip, far = inward_nearfar_heuristic(poses[i_train, :3, 3], ratio=0.02)
+        near = 0
 
     else:
         raise NotImplementedError(f'Unknown dataset type {args.dataset_type} exiting')
