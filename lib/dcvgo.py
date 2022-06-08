@@ -10,8 +10,17 @@ import torch.nn.functional as F
 from torch_scatter import segment_coo
 
 from . import grid
-from .dvgo import Raw2Alpha, Alphas2Weights, render_utils_cuda
+from .dvgo import Raw2Alpha, Alphas2Weights
 from .dmpigo import create_full_step_id
+
+from torch.utils.cpp_extension import load
+parent_dir = os.path.dirname(os.path.abspath(__file__))
+ub360_utils_cuda = load(
+        name='ub360_utils_cuda',
+        sources=[
+            os.path.join(parent_dir, path)
+            for path in ['cuda/ub360_utils.cpp', 'cuda/ub360_utils_kernel.cu']],
+        verbose=True)
 
 
 '''Model'''
@@ -178,6 +187,26 @@ class DirectContractedVoxGO(nn.Module):
         new_p = self.mask_cache.mask.float().mean().item()
         print(f'dcvgo: update mask_cache {ori_p:.4f} => {new_p:.4f}')
 
+    def update_occupancy_cache_lt_nviews(self, rays_o_tr, rays_d_tr, imsz, render_kwargs, maskout_lt_nviews):
+        print('dcvgo: update mask_cache lt_nviews start')
+        eps_time = time.time()
+        count = torch.zeros_like(self.density.get_dense_grid()).long()
+        device = count.device
+        for rays_o_, rays_d_ in zip(rays_o_tr.split(imsz), rays_d_tr.split(imsz)):
+            ones = grid.DenseGrid(1, self.world_size, self.xyz_min, self.xyz_max)
+            for rays_o, rays_d in zip(rays_o_.split(8192), rays_d_.split(8192)):
+                ray_pts, inner_mask, t = self.sample_ray(
+                        ori_rays_o=rays_o.to(device), ori_rays_d=rays_d.to(device),
+                        **render_kwargs)
+                ones(ray_pts).sum().backward()
+            count.data += (ones.grid.grad > 1)
+        ori_p = self.mask_cache.mask.float().mean().item()
+        self.mask_cache.mask &= (count >= maskout_lt_nviews)[0,0]
+        new_p = self.mask_cache.mask.float().mean().item()
+        print(f'dcvgo: update mask_cache {ori_p:.4f} => {new_p:.4f}')
+        eps_time = time.time() - eps_time
+        print(f'dcvgo: update mask_cache lt_nviews finish (eps time:', eps_time, 'sec)')
+
     def density_total_variation_add_grad(self, weight, dense_mode):
         w = weight * self.world_size.max() / 128
         self.density.total_variation_add_grad(w, w, w, dense_mode)
@@ -204,10 +233,10 @@ class DirectContractedVoxGO(nn.Module):
         '''
         rays_o = (ori_rays_o - self.scene_center) / self.scene_radius
         rays_d = ori_rays_d / ori_rays_d.norm(dim=-1, keepdim=True)
-        N_inner = int(2 / (2+2*self.bg_len) * np.sqrt(3) * self.world_len / stepsize) + 1
-        N_outer = int(N_inner * max(0.01, self.bg_len/2))
-        b_inner = torch.linspace(0, 2*np.sqrt(3), N_inner+1)
-        b_outer = 2*np.sqrt(3) / torch.linspace(1, 1e-3, N_outer+1)
+        N_inner = int(2 / (2+2*self.bg_len) * self.world_len / stepsize) + 1
+        N_outer = N_inner
+        b_inner = torch.linspace(0, 2, N_inner+1)
+        b_outer = 2 / torch.linspace(1, 1/128, N_outer+1)
         t = torch.cat([
             (b_inner[1:] + b_inner[:-1]) * 0.5,
             (b_outer[1:] + b_outer[:-1]) * 0.5,
@@ -239,22 +268,28 @@ class DirectContractedVoxGO(nn.Module):
         # sample points on rays
         ray_pts, inner_mask, t = self.sample_ray(
                 ori_rays_o=rays_o, ori_rays_d=rays_d, is_train=global_step is not None, **render_kwargs)
+        n_max = len(t)
         interval = render_kwargs['stepsize'] * self.voxel_size_ratio
         ray_id, step_id = create_full_step_id(ray_pts.shape[:2])
 
         # skip oversampled points outside scene bbox
         mask = inner_mask.clone()
-        dist_thres = 2 * (1+self.bg_len) / self.world_len * render_kwargs['stepsize'] * 0.95
+        dist_thres = (2+2*self.bg_len) / self.world_len * render_kwargs['stepsize'] * 0.95
         dist = (ray_pts[:,1:] - ray_pts[:,:-1]).norm(dim=-1)
-        mask[:, 1:] |= render_utils_cuda.cumdist_thres(dist, dist_thres)
-
-        # skip known free space
-        mask = self.mask_cache(ray_pts)
+        mask[:, 1:] |= ub360_utils_cuda.cumdist_thres(dist, dist_thres)
         ray_pts = ray_pts[mask]
         inner_mask = inner_mask[mask]
         t = t[None].repeat(N,1)[mask]
         ray_id = ray_id[mask.flatten()]
         step_id = step_id[mask.flatten()]
+
+        # skip known free space
+        mask = self.mask_cache(ray_pts)
+        ray_pts = ray_pts[mask]
+        inner_mask = inner_mask[mask]
+        t = t[mask]
+        ray_id = ray_id[mask]
+        step_id = step_id[mask]
 
         # query for alpha w/ post-activation
         density = self.density(ray_pts)
@@ -311,6 +346,7 @@ class DirectContractedVoxGO(nn.Module):
                 index=ray_id[inner_mask],
                 out=torch.zeros([N]),
                 reduce='sum')
+        s = 1 - 1/(1+t)  # [0, inf] => [0, 1]
         ret_dict.update({
             'alphainv_last': alphainv_last,
             'weights': weights,
@@ -321,17 +357,46 @@ class DirectContractedVoxGO(nn.Module):
             'raw_rgb': rgb,
             'ray_id': ray_id,
             'step_id': step_id,
+            'n_max': n_max,
             't': t,
+            's': s,
         })
 
         if render_kwargs.get('render_depth', False):
             with torch.no_grad():
                 depth = segment_coo(
-                        src=(weights * 1/(1+t)),
+                        src=(weights * s),
                         index=ray_id,
                         out=torch.zeros([N]),
                         reduce='sum')
             ret_dict.update({'depth': depth})
 
         return ret_dict
+
+
+class DistortionLoss(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, w, s, n_max, ray_id):
+        n_rays = ray_id.max()+1
+        interval = 1/n_max
+        w_prefix, w_total, ws_prefix, ws_total = ub360_utils_cuda.segment_cumsum(w, s, ray_id)
+        loss_uni = (1/3) * interval * w.pow(2)
+        loss_bi = 2 * w * (s * w_prefix - ws_prefix)
+        ctx.save_for_backward(w, s, w_prefix, w_total, ws_prefix, ws_total, ray_id)
+        ctx.interval = interval
+        return (loss_bi.sum() + loss_uni.sum()) / n_rays
+
+    @staticmethod
+    @torch.autograd.function.once_differentiable
+    def backward(ctx, grad_back):
+        w, s, w_prefix, w_total, ws_prefix, ws_total, ray_id = ctx.saved_tensors
+        interval = ctx.interval
+        grad_uni = (1/3) * interval * 2 * w
+        w_suffix = w_total[ray_id] - (w_prefix + w)
+        ws_suffix = ws_total[ray_id] - (ws_prefix + w*s)
+        grad_bi = 2 * (s * (w_prefix - w_suffix) + (ws_suffix - ws_prefix))
+        grad = grad_back * (grad_bi + grad_uni)
+        return grad, None, None, None
+
+distortion_loss = DistortionLoss.apply
 

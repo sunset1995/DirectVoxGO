@@ -49,9 +49,8 @@ coarse_train = dict(
     ray_sampler='random',         # ray sampling strategies
     weight_main=1.0,              # weight of photometric loss
     weight_entropy_last=0.01,     # weight of background entropy loss
-    weight_entropy_last_mid=0,
-    weight_sparse=0,
     weight_nearclip=0,
+    weight_distortion=0,
     weight_rgbper=0.1,            # weight of per-point rgb loss
     tv_every=1,                   # count total variation loss every tv_every step
     tv_after=0,                   # count total variation loss from tv_from step
@@ -62,6 +61,7 @@ coarse_train = dict(
     pg_scale=[],                  # checkpoints for progressive scaling
     decay_after_scale=1.0,        # decay act_shift after scaling
     skip_zero_grad_fields=[],     # the variable name to skip optimizing parameters w/ zero grad in each iteration
+    maskout_lt_nviews=0,
 )
 
 fine_train = deepcopy(coarse_train)

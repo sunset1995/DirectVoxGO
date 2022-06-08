@@ -370,6 +370,10 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             model.mask_cache.mask[cnt.squeeze() <= 2] = False
         per_voxel_init()
 
+    if cfg_train.maskout_lt_nviews > 0:
+        model.update_occupancy_cache_lt_nviews(
+                rays_o_tr, rays_d_tr, imsz, render_kwargs, cfg_train.maskout_lt_nviews)
+
     # GOGO
     torch.cuda.empty_cache()
     psnr_lst = []
@@ -433,16 +437,6 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             pout = render_result['alphainv_last'].clamp(1e-6, 1-1e-6)
             entropy_last_loss = -(pout*torch.log(pout) + (1-pout)*torch.log(1-pout)).mean()
             loss += cfg_train.weight_entropy_last * entropy_last_loss
-        if cfg_train.weight_entropy_last_mid > 0:
-            pin = render_result['wsum_mid'].clamp(1e-6, 1-1e-6)
-            entropy_mid_loss = -(pin*torch.log(pin) + (1-pin)*torch.log(1-pin)).mean()
-            loss += cfg_train.weight_entropy_last_mid * entropy_mid_loss
-        if cfg_train.weight_sparse > 0:
-            # Pulling down the alpha if it is below a_base
-            a_base = 1e-3
-            alpha = render_result['raw_alpha']
-            sparse_loss = (a_base / 2) - (a_base - alpha).clamp_min(0).pow(2) / (2*a_base)
-            loss += cfg_train.weight_sparse * sparse_loss.sum() / len(rays_o)
         if cfg_train.weight_nearclip > 0:
             near_thres = data_dict['near_clip'] / model.scene_radius[0].item()
             near_mask = (render_result['t'] < near_thres)
@@ -450,6 +444,13 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             if len(density):
                 nearclip_loss = (density - density.detach()).sum()
                 loss += cfg_train.weight_nearclip * nearclip_loss
+        if cfg_train.weight_distortion > 0:
+            n_max = render_result['n_max']
+            s = render_result['s']
+            w = render_result['weights']
+            ray_id = render_result['ray_id']
+            loss_distortion = dcvgo.distortion_loss(w, s, n_max, ray_id)
+            loss += cfg_train.weight_distortion * loss_distortion
         if cfg_train.weight_rgbper > 0:
             rgbper = (render_result['raw_rgb'] - target[render_result['ray_id']]).pow(2).sum(-1)
             rgbper_loss = (rgbper * render_result['weights'].detach()).sum() / len(rays_o)
