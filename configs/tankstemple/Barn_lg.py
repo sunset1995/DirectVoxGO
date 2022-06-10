@@ -9,6 +9,7 @@ data = dict(
     inverse_y=True,
     load2gpu_on_the_fly=True,
     white_bkgd=True,
+    movie_render_kwargs={'flip_up_vec': True},
 )
 
 coarse_train = dict(

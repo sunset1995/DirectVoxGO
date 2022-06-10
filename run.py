@@ -79,6 +79,7 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
 
         H, W = HW[i]
         K = Ks[i]
+        c2w = torch.Tensor(c2w)
         rays_o, rays_d, viewdirs = dvgo.get_rays_of_a_view(
                 H, W, K, c2w, ndc, inverse_y=render_kwargs['inverse_y'],
                 flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y)
@@ -205,6 +206,7 @@ def compute_bbox_by_cam_frustrm(args, cfg, HW, Ks, poses, i_train, near, far, **
     if cfg.data.unbounded_inward:
         xyz_min, xyz_max = _compute_bbox_by_cam_frustrm_unbounded(
                 cfg, HW, Ks, poses, i_train, kwargs.get('near_clip', None))
+
     else:
         xyz_min, xyz_max = _compute_bbox_by_cam_frustrm_bounded(
                 cfg, HW, Ks, poses, i_train, near, far)

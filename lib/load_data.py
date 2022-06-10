@@ -72,7 +72,8 @@ def load_data(args):
         assert images.shape[-1] == 3
 
     elif args.dataset_type == 'tankstemple':
-        images, poses, render_poses, hwf, K, i_split = load_tankstemple_data(args.datadir)
+        images, poses, render_poses, hwf, K, i_split = load_tankstemple_data(
+                args.datadir, movie_render_kwargs=args.movie_render_kwargs)
         print('Loaded tankstemple', images.shape, render_poses.shape, hwf, args.datadir)
         i_train, i_val, i_test = i_split
 
