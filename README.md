@@ -10,8 +10,8 @@ https://user-images.githubusercontent.com/2712505/153380197-991d1689-6418-499c-a
 ### Features
 - Speedup NeRF by replacing the MLP with the voxel grid.
 - Simple scene representation:
-    - **Volume densities**: dense voxel grid (3D).
-    - **View-dependent colors**: dense feature grid (4D) + shallow MLP.
+    - *Volume densities*: dense voxel grid (3D).
+    - *View-dependent colors*: dense feature grid (4D) + shallow MLP.
 - Pytorch cuda extention built just-in-time for another 2--3x speedup.
 - O(N) realization for the distortion loss proposed by [mip-nerf 360](https://jonbarron.info/mipnerf360/).
     - The loss improves our training time and quality.
@@ -20,9 +20,9 @@ https://user-images.githubusercontent.com/2712505/153380197-991d1689-6418-499c-a
         - GPU memory consumption: 6192MB => 96MB.
         - Run times for 100 iters: 20 sec => 0.2sec.
 - Supported datasets:
-    - **Bounded inward-facing**: [NeRF](https://drive.google.com/drive/folders/128yBriW1IG_3NJ5Rp7APSTZsJqdJdfc1), [NSVF](https://dl.fbaipublicfiles.com/nsvf/dataset/Synthetic_NSVF.zip), [BlendedMVS](https://dl.fbaipublicfiles.com/nsvf/dataset/BlendedMVS.zip), [T&T (masked)](https://dl.fbaipublicfiles.com/nsvf/dataset/TanksAndTemple.zip), [DeepVoxels](https://drive.google.com/open?id=1ScsRlnzy9Bd_n-xw83SP-0t548v63mPH).
-    - **Unbounded inward-facing**: [T&T](https://drive.google.com/file/d/11KRfN91W1AxAW6lOFs4EeYDbeoQZCi87/view?usp=sharing), [LF](https://drive.google.com/file/d/1gsjDjkbTh4GAR9fFqlIDZ__qR9NYTURQ/view?usp=sharing), [mip-NeRF360](https://jonbarron.info/mipnerf360/).
-    - **Foward-facing**: [LLFF](https://drive.google.com/drive/folders/14boI-o5hGO9srnWaaogTU5_ji7wkX2S7).
+    - *Bounded inward-facing*: [NeRF](https://drive.google.com/drive/folders/128yBriW1IG_3NJ5Rp7APSTZsJqdJdfc1), [NSVF](https://dl.fbaipublicfiles.com/nsvf/dataset/Synthetic_NSVF.zip), [BlendedMVS](https://dl.fbaipublicfiles.com/nsvf/dataset/BlendedMVS.zip), [T&T (masked)](https://dl.fbaipublicfiles.com/nsvf/dataset/TanksAndTemple.zip), [DeepVoxels](https://drive.google.com/open?id=1ScsRlnzy9Bd_n-xw83SP-0t548v63mPH).
+    - *Unbounded inward-facing*: [T&T](https://drive.google.com/file/d/11KRfN91W1AxAW6lOFs4EeYDbeoQZCi87/view?usp=sharing), [LF](https://drive.google.com/file/d/1gsjDjkbTh4GAR9fFqlIDZ__qR9NYTURQ/view?usp=sharing), [mip-NeRF360](https://jonbarron.info/mipnerf360/).
+    - *Foward-facing*: [LLFF](https://drive.google.com/drive/folders/14boI-o5hGO9srnWaaogTU5_ji7wkX2S7).
 
 
 ### Installation
