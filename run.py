@@ -13,6 +13,8 @@ import torch.nn.functional as F
 from lib import utils, dvgo, dcvgo, dmpigo
 from lib.load_data import load_data
 
+from torch_efficient_distloss import flatten_eff_distloss
+
 
 def config_parser():
     '''Define command line arguments
@@ -451,7 +453,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             s = render_result['s']
             w = render_result['weights']
             ray_id = render_result['ray_id']
-            loss_distortion = dcvgo.distortion_loss(w, s, n_max, ray_id)
+            loss_distortion = flatten_eff_distloss(w, s, 1/n_max, ray_id)
             loss += cfg_train.weight_distortion * loss_distortion
         if cfg_train.weight_rgbper > 0:
             rgbper = (render_result['raw_rgb'] - target[render_result['ray_id']]).pow(2).sum(-1)

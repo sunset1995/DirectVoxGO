@@ -30,6 +30,7 @@ class DirectContractedVoxGO(nn.Module):
                  alpha_init=None,
                  mask_cache_world_size=None,
                  fast_color_thres=0, bg_len=0.2,
+                 contracted_norm='inf',
                  density_type='DenseGrid', k0_type='DenseGrid',
                  density_config={}, k0_config={},
                  rgbnet_dim=0,
@@ -52,6 +53,7 @@ class DirectContractedVoxGO(nn.Module):
             self._fast_color_thres = None
             self.fast_color_thres = fast_color_thres
         self.bg_len = bg_len
+        self.contracted_norm = contracted_norm
 
         # determine based grid resolution
         self.num_voxels_base = num_voxels_base
@@ -142,6 +144,7 @@ class DirectContractedVoxGO(nn.Module):
             'voxel_size_ratio': self.voxel_size_ratio,
             'mask_cache_world_size': list(self.mask_cache.mask.shape),
             'fast_color_thres': self.fast_color_thres,
+            'contracted_norm': self.contracted_norm,
             'density_type': self.density_type,
             'k0_type': self.k0_type,
             'density_config': self.density_config,
@@ -242,7 +245,12 @@ class DirectContractedVoxGO(nn.Module):
             (b_outer[1:] + b_outer[:-1]) * 0.5,
         ])
         ray_pts = rays_o[:,None,:] + rays_d[:,None,:] * t[None,:,None]
-        norm = ray_pts.norm(dim=-1, keepdim=True)
+        if self.contracted_norm == 'inf':
+            norm = ray_pts.abs().amax(dim=-1, keepdim=True)
+        elif self.contracted_norm == 'l2':
+            norm = ray_pts.norm(dim=-1, keepdim=True)
+        else:
+            raise NotImplementedError
         inner_mask = (norm<=1)
         ray_pts = torch.where(
             inner_mask,
