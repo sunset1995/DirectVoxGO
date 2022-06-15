@@ -126,8 +126,12 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True, lo
 
     imgfiles = [os.path.join(imgdir, f) for f in sorted(os.listdir(imgdir)) if f.endswith('JPG') or f.endswith('jpg') or f.endswith('png')]
     if poses.shape[-1] != len(imgfiles):
+        print()
         print( 'Mismatch between imgs {} and poses {} !!!!'.format(len(imgfiles), poses.shape[-1]) )
-        import sys; sys.exit()
+        perm = np.load(os.path.join(basedir, 'poses_perm.npy'))
+        print('Below failed files are skip', [path for i, path in enumerate(imgfiles) if i not in perm])
+        print()
+        imgfiles = [imgfiles[i] for i in perm]
 
     sh = imageio.imread(imgfiles[0]).shape
     if poses.shape[1] == 4:
@@ -194,7 +198,7 @@ def render_path_spiral(c2w, up, rads, focal, zdelta, zrate, rots, N):
     hwf = c2w[:,4:5]
 
     for theta in np.linspace(0., 2. * np.pi * rots, N+1)[:-1]:
-        c = np.dot(c2w[:3,:4], np.array([np.cos(theta), -np.sin(theta), -np.sin(theta*zrate), 1.]) * rads) 
+        c = np.dot(c2w[:3,:4], np.array([np.cos(theta), -np.sin(theta), -np.sin(theta*zrate)*zdelta, 1.]) * rads) 
         z = normalize(c - np.dot(c2w[:3,:4], np.array([0,0,-focal, 1.])))
         render_poses.append(np.concatenate([viewmatrix(z, up, c), hwf], 1))
     return render_poses
@@ -330,7 +334,10 @@ def load_llff_data(basedir, factor=8, width=None, height=None,
 
         for th in np.linspace(0., 2.*np.pi, 200):
             camorigin = np.array([radcircle * np.cos(th), 0, radcircle * np.sin(th)])
-            up = np.array([0,-1.,0])
+            if movie_render_kwargs.get('flip_up', False):
+                up = np.array([0,1.,0])
+            else:
+                up = np.array([0,-1.,0])
             vec2 = normalize(camorigin)
             vec0 = normalize(np.cross(vec2, up))
             vec1 = normalize(np.cross(vec2, vec0))
@@ -363,16 +370,16 @@ def load_llff_data(basedir, factor=8, width=None, height=None,
         close_depth, inf_depth = bds.min()*.9, bds.max()*5.
         dt = .75
         mean_dz = 1./(((1.-dt)/close_depth + dt/inf_depth))
-        focal = mean_dz
+        focal = mean_dz * movie_render_kwargs.get('scale_f', 1)
 
         # Get radii for spiral path
-        shrink_factor = .8
-        zdelta = close_depth * .2
+        zdelta = movie_render_kwargs.get('zdelta', 0.5)
+        zrate = movie_render_kwargs.get('zrate', 1.0)
         tt = poses[:,:3,3] # ptstocam(poses[:3,3,:].T, c2w).T
-        rads = np.percentile(np.abs(tt), 90, 0)
+        rads = np.percentile(np.abs(tt), 90, 0) * movie_render_kwargs.get('scale_r', 1)
         c2w_path = c2w
         N_views = 120
-        N_rots = 2
+        N_rots = 1
         if path_zflat:
 #             zloc = np.percentile(tt, 10, 0)[2]
             zloc = -close_depth * .1
@@ -382,7 +389,7 @@ def load_llff_data(basedir, factor=8, width=None, height=None,
             N_views/=2
 
         # Generate poses for spiral path
-        render_poses = render_path_spiral(c2w_path, up, rads, focal, zdelta, zrate=.5, rots=N_rots, N=N_views)
+        render_poses = render_path_spiral(c2w_path, up, rads, focal, zdelta, zrate=zrate, rots=N_rots, N=N_views)
 
     render_poses = torch.Tensor(render_poses)
 
