@@ -7,10 +7,10 @@ data = dict(
     factor=4, # 1237x822
     movie_render_kwargs=dict(
         shift_x=0.0,  # positive right
-        shift_y=-0.1, # negative down
+        shift_y=0, # negative down
         shift_z=0,
         scale_r=1.0,
-        pitch_deg=0, # negative look downward
+        pitch_deg=-10, # negative look downward
     ),
 )
 

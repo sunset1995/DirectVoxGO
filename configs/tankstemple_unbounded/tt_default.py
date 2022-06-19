@@ -44,5 +44,6 @@ fine_model_and_render = dict(
         6500: 1e-4,
     },
     world_bound_scale=1,
+    contracted_norm='l2',
 )
 

@@ -16,14 +16,15 @@ data = dict(
 coarse_train = dict(N_iters=0)
 
 fine_train = dict(
-    N_iters=30000,
+    N_iters=40000,
     N_rand=4096,
+    lrate_decay=80,
     ray_sampler='flatten',
     weight_nearclip=1.0,
     weight_distortion=0.01,
-    pg_scale=[1000,2000,3000,4000,5000,6000,7000,8000],
-    tv_before=1e9,
-    tv_dense_before=10000,
+    pg_scale=[2000,4000,6000,8000,10000,12000,14000,16000],
+    tv_before=20000,
+    tv_dense_before=20000,
     weight_tv_density=1e-6,
     weight_tv_k0=1e-7,
 )

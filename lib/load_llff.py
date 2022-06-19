@@ -379,7 +379,7 @@ def load_llff_data(basedir, factor=8, width=None, height=None,
         rads = np.percentile(np.abs(tt), 90, 0) * movie_render_kwargs.get('scale_r', 1)
         c2w_path = c2w
         N_views = 120
-        N_rots = 1
+        N_rots = movie_render_kwargs.get('N_rots', 1)
         if path_zflat:
 #             zloc = np.percentile(tt, 10, 0)[2]
             zloc = -close_depth * .1
