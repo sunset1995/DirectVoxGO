@@ -7,12 +7,11 @@ https://user-images.githubusercontent.com/2712505/153380311-19d6c3a1-9130-489a-a
 https://user-images.githubusercontent.com/2712505/153380197-991d1689-6418-499c-a192-d757f9a64b64.mp4
 
 ### Custom casual capturing
+A [short guide](https://sunset1995.github.io/dvgo/tutor_forward_facing.html) to capture custom forward-facing scenes and rendering fly-through videos.
+
+Below are two rgb and depth fly-through videos from custom captured scenes.
 
 https://user-images.githubusercontent.com/2712505/174267754-619d4f81-dd04-4c50-ba7f-434774cb890e.mp4
-
-(left: rendered RGB / right: rendered depth)
-
-A tutorial for this is still under construction.
 
 ### Features
 - Speedup NeRF by replacing the MLP with the voxel grid.
