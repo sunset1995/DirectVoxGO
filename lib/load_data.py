@@ -18,7 +18,7 @@ def load_data(args):
     if args.dataset_type == 'llff':
         images, depths, poses, bds, render_poses, i_test = load_llff_data(
                 args.datadir, args.factor, args.width, args.height,
-                recenter=True, bd_factor=.75,
+                recenter=True, bd_factor=args.bd_factor,
                 spherify=args.spherify,
                 load_depths=args.load_depths,
                 movie_render_kwargs=args.movie_render_kwargs)
@@ -41,8 +41,8 @@ def load_data(args):
             near = 0.
             far = 1.
         else:
-            near_clip = np.ndarray.min(bds) * .9
-            _far = np.ndarray.max(bds) * 1.
+            near_clip = max(np.ndarray.min(bds) * .9, 0)
+            _far = max(np.ndarray.max(bds) * 1., 0)
             near = 0
             far = inward_nearfar_heuristic(poses[i_train, :3, 3])[1]
             print('near_clip', near_clip)

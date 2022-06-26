@@ -308,6 +308,10 @@ def load_llff_data(basedir, factor=8, width=None, height=None,
     bds = np.moveaxis(bds, -1, 0).astype(np.float32)
 
     # Rescale if bd_factor is provided
+    if bds.min() < 0:
+        print('Found negative z values from SfM sparse points!?')
+        print('Please try bd_factor=None')
+        import sys; sys.exit()
     sc = 1. if bd_factor is None else 1./(bds.min() * bd_factor)
     poses[:,:3,3] *= sc
     bds *= sc
