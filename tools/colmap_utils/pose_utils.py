@@ -53,10 +53,10 @@ def load_colmap_data(realdir):
     # must switch to [-u, r, -t] from [r, -u, t], NOT [r, u, -t]
     poses = np.concatenate([poses[:, 1:2, :], poses[:, 0:1, :], -poses[:, 2:3, :], poses[:, 3:4, :], poses[:, 4:5, :]], 1)
     
-    return poses, pts3d, perm
+    return poses, pts3d, perm, names
 
 
-def save_poses(basedir, poses, pts3d, perm):
+def save_poses(basedir, poses, pts3d, perm, names):
     pts_arr = []
     vis_arr = []
     for k in pts3d:
@@ -89,7 +89,7 @@ def save_poses(basedir, poses, pts3d, perm):
     save_arr = np.array(save_arr)
     
     np.save(os.path.join(basedir, 'poses_bounds.npy'), save_arr)
-    np.save(os.path.join(basedir, 'poses_perm.npy'), perm)
+    np.save(os.path.join(basedir, 'poses_names.npy'), sorted(names))
 
 
 def minify(basedir, factors=[], resolutions=[]):
@@ -161,11 +161,11 @@ def gen_poses(basedir, match_type, factors=None):
 
     print( 'Post-colmap')
 
-    poses, pts3d, perm = load_colmap_data(basedir)
+    poses, pts3d, perm, names = load_colmap_data(basedir)
 
     densedir = os.path.join(basedir, 'dense')
 
-    save_poses(densedir, poses, pts3d, perm)
+    save_poses(densedir, poses, pts3d, perm, names)
 
     if factors is not None:
         print( 'Factors:', factors)

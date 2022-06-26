@@ -128,10 +128,21 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True, lo
     if poses.shape[-1] != len(imgfiles):
         print()
         print( 'Mismatch between imgs {} and poses {} !!!!'.format(len(imgfiles), poses.shape[-1]) )
-        perm = np.load(os.path.join(basedir, 'poses_perm.npy'))
-        print('Below failed files are skip', [path for i, path in enumerate(imgfiles) if i not in perm])
-        print()
-        imgfiles = [imgfiles[i] for i in perm]
+        names = set(name[:-4] for name in np.load(os.path.join(basedir, 'poses_names.npy')))
+        assert len(names) == poses.shape[-1]
+        print('Below failed files are skip due to SfM failure:')
+        new_imgfiles = []
+        for i in imgfiles:
+            fname = os.path.split(i)[1][:-4]
+            if fname in names:
+                new_imgfiles.append(i)
+            else:
+                print('==>', i)
+        imgfiles = new_imgfiles
+
+    if len(imgfiles) < 3:
+        print('Too few images...')
+        import sys; sys.exit()
 
     sh = imageio.imread(imgfiles[0]).shape
     if poses.shape[1] == 4:
@@ -308,7 +319,7 @@ def load_llff_data(basedir, factor=8, width=None, height=None,
     bds = np.moveaxis(bds, -1, 0).astype(np.float32)
 
     # Rescale if bd_factor is provided
-    if bds.min() < 0:
+    if bds.min() < 0 and bd_factor is not None:
         print('Found negative z values from SfM sparse points!?')
         print('Please try bd_factor=None')
         import sys; sys.exit()
