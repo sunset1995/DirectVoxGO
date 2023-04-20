@@ -2,6 +2,7 @@ import numpy as np
 
 from .load_llff import load_llff_data
 from .load_blender import load_blender_data
+from .load_blender_supres import load_blender_data as load_blender_data_supres
 from .load_nsvf import load_nsvf_data
 from .load_blendedmvs import load_blendedmvs_data
 from .load_tankstemple import load_tankstemple_data
@@ -22,8 +23,8 @@ def load_data(args):
                 spherify=args.spherify,
                 load_depths=args.load_depths,
                 movie_render_kwargs=args.movie_render_kwargs)
-        hwf = poses[0,:3,-1]
-        poses = poses[:,:3,:4]
+        hwf = poses[0, :3, -1]
+        poses = poses[:, :3, :4]
         print('Loaded llff', images.shape, render_poses.shape, hwf, args.datadir)
         if not isinstance(i_test, list):
             i_test = [i_test]
@@ -50,7 +51,8 @@ def load_data(args):
         print('NEAR FAR', near, far)
 
     elif args.dataset_type == 'blender':
-        images, poses, render_poses, hwf, i_split = load_blender_data(args.datadir, args.half_res, args.testskip)
+        images, poses, render_poses, hwf, i_split = load_blender_data(
+            args.datadir, args.half_res, args.testskip)
         print('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
         i_train, i_val, i_test = i_split
 
@@ -61,6 +63,21 @@ def load_data(args):
                 images = images[...,:3]*images[...,-1:] + (1.-images[...,-1:])
             else:
                 images = images[...,:3]*images[...,-1:]
+
+    elif args.dataset_type == 'blender_supres':
+        images, poses, render_poses, hwf, i_split = load_blender_data_supres(
+            args.datadir, args.res, args.testskip)
+        print('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
+        i_train, i_val, i_test = i_split
+
+        near, far = 2., 6.
+
+        if images.shape[-1] == 4:
+            if args.white_bkgd:
+                images = images[..., :3]*images[...,-1:] + (1.-images[...,-1:])
+            else:
+                images = images[..., :3]*images[...,-1:]
+
 
     elif args.dataset_type == 'blendedmvs':
         images, poses, render_poses, hwf, K, i_split = load_blendedmvs_data(args.datadir)

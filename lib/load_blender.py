@@ -57,14 +57,17 @@ def load_blender_data(basedir, half_res=False, testskip=1):
             fname = os.path.join(basedir, frame['file_path'] + '.png')
             imgs.append(imageio.imread(fname))
             poses.append(np.array(frame['transform_matrix']))
-        imgs = (np.array(imgs) / 255.).astype(np.float32) # keep all 4 channels (RGBA)
+        imgs = (np.array(imgs) / 255.).astype(np.float32)  # keep all 4 channels (RGBA)
+        # add alpha channel if there is no alpha channel
+        if imgs.shape[-1] == 3:
+            imgs = np.concatenate(
+                [imgs, np.ones((*imgs.shape[:-1], 1))], axis=-1)
         poses = np.array(poses).astype(np.float32)
         counts.append(counts[-1] + imgs.shape[0])
         all_imgs.append(imgs)
         all_poses.append(poses)
 
     i_split = [np.arange(counts[i], counts[i+1]) for i in range(3)]
-
     imgs = np.concatenate(all_imgs, 0)
     poses = np.concatenate(all_poses, 0)
 
