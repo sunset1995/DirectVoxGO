@@ -6,6 +6,7 @@ basedir = './logs/nerf_synthetic'
 data = dict(
     datadir='./data/nerf_synthetic/lego_200_to_800',
     dataset_type='blender',
-    white_bkgd=True,
+    # white_bkgd=True,
+    white_bkgd=False,
 )
 
