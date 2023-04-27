@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from lib import utils, dvgo, dcvgo, dmpigo
+from lib import utils, dvgo, dcvgo, dmpigo, dvgo_pwl
 from lib.load_data import load_data
 
 from torch_efficient_distloss import flatten_eff_distloss
@@ -273,6 +273,13 @@ def create_new_model(cfg, cfg_model, cfg_train, xyz_min, xyz_max, stage, coarse_
             xyz_min=xyz_min, xyz_max=xyz_max,
             num_voxels=num_voxels,
             **model_kwargs)
+    elif getattr(cfg, "model_class", None) == "dvgo_pwl":
+        print(f'scene_rep_reconstruction ({stage}): \033[96muse dense voxel grid\033[0m')
+        model = dvgo_pwl.DirectVoxGO(
+            xyz_min=xyz_min, xyz_max=xyz_max,
+            num_voxels=num_voxels,
+            mask_cache_path=coarse_ckpt_path,
+            **model_kwargs)
     else:
         print(f'scene_rep_reconstruction ({stage}): \033[96muse dense voxel grid\033[0m')
         model = dvgo.DirectVoxGO(
@@ -289,6 +296,8 @@ def load_existed_model(args, cfg, cfg_train, reload_ckpt_path):
         model_class = dmpigo.DirectMPIGO
     elif cfg.data.unbounded_inward:
         model_class = dcvgo.DirectContractedVoxGO
+    elif getattr(cfg, "model_class", None) == "dvgo_pwl":
+        model_class = dvgo_pwl.DirectVoxGO
     else:
         model_class = dvgo.DirectVoxGO
     model = utils.load_model(model_class, reload_ckpt_path).to(device)
@@ -408,7 +417,8 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         if global_step in cfg_train.pg_scale:
             n_rest_scales = len(cfg_train.pg_scale)-cfg_train.pg_scale.index(global_step)-1
             cur_voxels = int(cfg_model.num_voxels / (2**n_rest_scales))
-            if isinstance(model, (dvgo.DirectVoxGO, dcvgo.DirectContractedVoxGO)):
+            if isinstance(model, (dvgo.DirectVoxGO, 
+                                  dcvgo.DirectContractedVoxGO, dvgo_pwl.DirectVoxGO)):
                 model.scale_volume_grid(cur_voxels)
             elif isinstance(model, dmpigo.DirectMPIGO):
                 model.scale_volume_grid(cur_voxels, model.mpi_depth)
@@ -556,8 +566,10 @@ def train(args, cfg, data_dict):
     if cfg.coarse_train.N_iters == 0:
         xyz_min_fine, xyz_max_fine = xyz_min_coarse.clone(), xyz_max_coarse.clone()
     else:
+        # TODO: what if it's dvgo_pwl?
         xyz_min_fine, xyz_max_fine = compute_bbox_by_coarse_geo(
-                model_class=dvgo.DirectVoxGO, model_path=coarse_ckpt_path,
+                model_class=dvgo.DirectVoxGO,
+                model_path=coarse_ckpt_path,
                 thres=cfg.fine_model_and_render.bbox_thres)
     scene_rep_reconstruction(
             args=args, cfg=cfg,
@@ -618,7 +630,10 @@ if __name__=='__main__':
         print('Export coarse visualization...')
         with torch.no_grad():
             ckpt_path = os.path.join(cfg.basedir, cfg.expname, 'coarse_last.tar')
-            model = utils.load_model(dvgo.DirectVoxGO, ckpt_path).to(device)
+            if getattr(cfg, "model_class", None) == "dvgo_pwl":
+                model = utils.load_model(dvgo_pwl.DirectVoxGO, ckpt_path).to(device)
+            else:
+                model = utils.load_model(dvgo.DirectVoxGO, ckpt_path).to(device)
             alpha = model.activate_density(model.density.get_dense_grid()).squeeze().cpu().numpy()
             rgb = torch.sigmoid(model.k0.get_dense_grid()).squeeze().permute(1,2,3,0).cpu().numpy()
         np.savez_compressed(args.export_coarse_only, alpha=alpha, rgb=rgb)
@@ -640,6 +655,8 @@ if __name__=='__main__':
             model_class = dmpigo.DirectMPIGO
         elif cfg.data.unbounded_inward:
             model_class = dcvgo.DirectContractedVoxGO
+        elif getattr(cfg, "model_class", None) == "dvgo_pwl":
+            model_class = dvgo_pwl.DirectVoxGO
         else:
             model_class = dvgo.DirectVoxGO
         model = utils.load_model(model_class, ckpt_path).to(device)

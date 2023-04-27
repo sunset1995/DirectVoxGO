@@ -19,6 +19,8 @@ render_utils_cuda = load(
             for path in ['cuda/render_utils.cpp', 'cuda/render_utils_kernel.cu']],
         verbose=True)
 
+# Import PWL utilities
+from lib import pwl_utils 
 
 '''Model'''
 class DirectVoxGO(torch.nn.Module):
@@ -249,10 +251,10 @@ class DirectVoxGO(torch.nn.Module):
         w = weight * self.world_size.max() / 128
         self.k0.total_variation_add_grad(w, w, w, dense_mode)
 
-    def activate_density(self, density, interval=None):
-        interval = interval if interval is not None else self.voxel_size_ratio
-        shape = density.shape
-        return Raw2Alpha.apply(density.flatten(), self.act_shift, interval).reshape(shape)
+    # def activate_density(self, density, interval=None):
+        # interval = interval if interval is not None else self.voxel_size_ratio
+        # shape = density.shape
+        # return Raw2Alpha.apply(density.flatten(), self.act_shift, interval).reshape(shape)
 
     def hit_coarse_geo(self, rays_o, rays_d, near, far, stepsize, **render_kwargs):
         '''Check whether the rays hit the solved coarse geometry or not'''
@@ -317,7 +319,11 @@ class DirectVoxGO(torch.nn.Module):
 
         # query for alpha w/ post-activation
         density = self.density(ray_pts)
-        alpha = self.activate_density(density, interval)
+        # alpha = self.activate_density(density, interval)
+        raw = F.softplus(density + self.act_shift)
+        alpha, alphainv_last, weights = pwl_utils.raw_to_alphas_weights(
+            raw, ray_id, ray_pts, rays_o)
+        # TODO: this should be done before!
         if self.fast_color_thres > 0:
             mask = (alpha > self.fast_color_thres)
             ray_pts = ray_pts[mask]
@@ -325,10 +331,8 @@ class DirectVoxGO(torch.nn.Module):
             step_id = step_id[mask]
             density = density[mask]
             alpha = alpha[mask]
+            weights = weights[mask]
 
-        # compute accumulated transmittance
-        weights, alphainv_last = Alphas2Weights.apply(alpha, ray_id, N)
-        import pdb; pdb.set_trace()
         if self.fast_color_thres > 0:
             mask = (weights > self.fast_color_thres)
             weights = weights[mask]
@@ -389,69 +393,6 @@ class DirectVoxGO(torch.nn.Module):
             ret_dict.update({'depth': depth})
 
         return ret_dict
-
-
-''' Misc
-'''
-class Raw2Alpha(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, density, shift, interval):
-        '''
-        alpha = 1 - exp(-softplus(density + shift) * interval)
-              = 1 - exp(-log(1 + exp(density + shift)) * interval)
-              = 1 - exp(log(1 + exp(density + shift)) ^ (-interval))
-              = 1 - (1 + exp(density + shift)) ^ (-interval)
-        '''
-        exp, alpha = render_utils_cuda.raw2alpha(density, shift, interval)
-        if density.requires_grad:
-            ctx.save_for_backward(exp)
-            ctx.interval = interval
-        return alpha
-
-    @staticmethod
-    @torch.autograd.function.once_differentiable
-    def backward(ctx, grad_back):
-        '''
-        alpha' = interval * ((1 + exp(density + shift)) ^ (-interval-1)) * exp(density + shift)'
-               = interval * ((1 + exp(density + shift)) ^ (-interval-1)) * exp(density + shift)
-        '''
-        exp = ctx.saved_tensors[0]
-        interval = ctx.interval
-        return render_utils_cuda.raw2alpha_backward(exp, grad_back.contiguous(), interval), None, None
-
-class Raw2Alpha_nonuni(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, density, shift, interval):
-        exp, alpha = render_utils_cuda.raw2alpha_nonuni(density, shift, interval)
-        if density.requires_grad:
-            ctx.save_for_backward(exp)
-            ctx.interval = interval
-        return alpha
-
-    @staticmethod
-    @torch.autograd.function.once_differentiable
-    def backward(ctx, grad_back):
-        exp = ctx.saved_tensors[0]
-        interval = ctx.interval
-        return render_utils_cuda.raw2alpha_nonuni_backward(exp, grad_back.contiguous(), interval), None, None
-
-class Alphas2Weights(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, alpha, ray_id, N):
-        weights, T, alphainv_last, i_start, i_end = render_utils_cuda.alpha2weight(alpha, ray_id, N)
-        if alpha.requires_grad:
-            ctx.save_for_backward(alpha, weights, T, alphainv_last, i_start, i_end)
-            ctx.n_rays = N
-        return weights, alphainv_last
-
-    @staticmethod
-    @torch.autograd.function.once_differentiable
-    def backward(ctx, grad_weights, grad_last):
-        alpha, weights, T, alphainv_last, i_start, i_end = ctx.saved_tensors
-        grad = render_utils_cuda.alpha2weight_backward(
-                alpha, weights, T, alphainv_last,
-                i_start, i_end, ctx.n_rays, grad_weights, grad_last)
-        return grad, None, None
 
 
 ''' Ray and batch
