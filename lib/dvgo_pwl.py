@@ -9,6 +9,13 @@ import torch.nn.functional as F
 
 from torch_scatter import segment_coo
 
+from lib.dvgo import (
+    Raw2Alpha, Raw2Alpha_nonuni, Alphas2Weights, get_rays, get_rays_np, ndc_rays,
+    get_rays_of_a_view, get_training_rays, get_training_rays_flatten,
+    get_training_rays_in_maskcache_sampling, batch_indices_generator
+    )
+
+
 from . import grid
 from torch.utils.cpp_extension import load
 parent_dir = os.path.dirname(os.path.abspath(__file__))
@@ -19,8 +26,6 @@ render_utils_cuda = load(
             for path in ['cuda/render_utils.cpp', 'cuda/render_utils_kernel.cu']],
         verbose=True)
 
-# Import PWL utilities
-from lib import pwl_utils 
 
 '''Model'''
 class DirectVoxGO(torch.nn.Module):
@@ -191,9 +196,15 @@ class DirectVoxGO(torch.nn.Module):
                 torch.linspace(self.xyz_min[1], self.xyz_max[1], self.world_size[1]),
                 torch.linspace(self.xyz_min[2], self.xyz_max[2], self.world_size[2]),
             ), -1)
-            self_alpha = F.max_pool3d(self.activate_density(self.density.get_dense_grid()), kernel_size=3, padding=1, stride=1)[0,0]
+            # TODO: computing alpha across the grid!
+            # alpha_grid = self.activate_density(self.density.get_dense_grid())
+            # self_alpha = alpha_grid_to_pwlalpha_grid(alpha_grid)
+            self_alpha = F.max_pool3d(
+                self.activate_density(self.density.get_dense_grid()), 
+                kernel_size=3, padding=1, stride=1)[0,0]
             self.mask_cache = grid.MaskGrid(
-                    path=None, mask=self.mask_cache(self_grid_xyz) & (self_alpha>self.fast_color_thres),
+                    path=None, 
+                    mask=(self.mask_cache(self_grid_xyz) & (self_alpha>self.fast_color_thres)),
                     xyz_min=self.xyz_min, xyz_max=self.xyz_max)
 
         print('dvgo: scale_volume_grid finish')
@@ -207,7 +218,9 @@ class DirectVoxGO(torch.nn.Module):
         ), -1)
         cache_grid_density = self.density(cache_grid_xyz)[None,None]
         cache_grid_alpha = self.activate_density(cache_grid_density)
-        cache_grid_alpha = F.max_pool3d(cache_grid_alpha, kernel_size=3, padding=1, stride=1)[0,0]
+        # cache_grid_alpha = alpha_grid_to_pwlalpha_grid(cache_grid_alpha)
+        cache_grid_alpha = F.max_pool3d(
+            cache_grid_alpha, kernel_size=3, padding=1, stride=1)[0,0]
         self.mask_cache.mask &= (cache_grid_alpha > self.fast_color_thres)
 
     def voxel_count_views(self, rays_o_tr, rays_d_tr, imsz, near, far, stepsize, downrate=1, irregular_shape=False):
@@ -251,10 +264,10 @@ class DirectVoxGO(torch.nn.Module):
         w = weight * self.world_size.max() / 128
         self.k0.total_variation_add_grad(w, w, w, dense_mode)
 
-    # def activate_density(self, density, interval=None):
-        # interval = interval if interval is not None else self.voxel_size_ratio
-        # shape = density.shape
-        # return Raw2Alpha.apply(density.flatten(), self.act_shift, interval).reshape(shape)
+    def activate_density(self, density, interval=None):
+        interval = interval if interval is not None else self.voxel_size_ratio
+        shape = density.shape
+        return Raw2Alpha.apply(density.flatten(), self.act_shift, interval).reshape(shape)
 
     def hit_coarse_geo(self, rays_o, rays_d, near, far, stepsize, **render_kwargs):
         '''Check whether the rays hit the solved coarse geometry or not'''
@@ -319,11 +332,7 @@ class DirectVoxGO(torch.nn.Module):
 
         # query for alpha w/ post-activation
         density = self.density(ray_pts)
-        # alpha = self.activate_density(density, interval)
-        raw = F.softplus(density + self.act_shift)
-        alpha, alphainv_last, weights = pwl_utils.raw_to_alphas_weights(
-            raw, ray_id, ray_pts, rays_o)
-        # TODO: this should be done before!
+        alpha = self.activate_density(density, interval)
         if self.fast_color_thres > 0:
             mask = (alpha > self.fast_color_thres)
             ray_pts = ray_pts[mask]
@@ -331,8 +340,11 @@ class DirectVoxGO(torch.nn.Module):
             step_id = step_id[mask]
             density = density[mask]
             alpha = alpha[mask]
-            weights = weights[mask]
 
+        # compute accumulated transmittance
+        alpha_pwl = alpha_to_pwlalpha(alpha, ray_id, interval)
+        # weights, alphainv_last = Alphas2Weights.apply(alpha, ray_id, N)
+        weights, alphainv_last = Alphas2Weights.apply(alpha_pwl, ray_id, N)
         if self.fast_color_thres > 0:
             mask = (weights > self.fast_color_thres)
             weights = weights[mask]
@@ -395,181 +407,53 @@ class DirectVoxGO(torch.nn.Module):
         return ret_dict
 
 
-''' Ray and batch
-'''
-def get_rays(H, W, K, c2w, inverse_y, flip_x, flip_y, mode='center'):
-    i, j = torch.meshgrid(
-        torch.linspace(0, W-1, W, device=c2w.device),
-        torch.linspace(0, H-1, H, device=c2w.device))  # pytorch's meshgrid has indexing='ij'
-    i = i.t().float()
-    j = j.t().float()
-    if mode == 'lefttop':
-        pass
-    elif mode == 'center':
-        i, j = i+0.5, j+0.5
-    elif mode == 'random':
-        i = i+torch.rand_like(i)
-        j = j+torch.rand_like(j)
-    else:
-        raise NotImplementedError
+def alpha_to_pwlalpha(alpha, ray_id, interval):
+    """
+    Assuming the delta is fixed for now
+        alpha_pwl_i = 1 - exp(- 0.5 * (tau_i + tau_{i+1}) * delta)
+                    = 1 - (exp(-tau_i * delta) exp(tau_{i+1} * delta))**0.5
+                    = 1 - ((1 - alpha_i) (1 - alpha_{i+1}))**0.5
+    TODO: caveat - how to handle the last one (or the first one)
+          for now we will replace the last alpha to be the original 
+          alpha (since i+1 doesn't exist); but this is not ideal
 
-    if flip_x:
-        i = i.flip((1,))
-    if flip_y:
-        j = j.flip((0,))
-    if inverse_y:
-        dirs = torch.stack([(i-K[0][2])/K[0][0], (j-K[1][2])/K[1][1], torch.ones_like(i)], -1)
-    else:
-        dirs = torch.stack([(i-K[0][2])/K[0][0], -(j-K[1][2])/K[1][1], -torch.ones_like(i)], -1)
-    # Rotate ray directions from camera frame to the world frame
-    rays_d = torch.sum(dirs[..., np.newaxis, :] * c2w[:3,:3], -1)  # dot product, equals to: [c2w.dot(dir) for dir in dirs]
-    # Translate camera frame's origin to the world frame. It is the origin of all rays.
-    rays_o = c2w[:3,3].expand(rays_d.shape)
-    return rays_o, rays_d
+    Args:
+        [alpha] (N,)
+        [ray_id] (N,)
+        [interval] (float)
+    Return:
+        [alpha] new alpha with PWL formulation
+    """
+    alpha_inv = 1 - alpha
+    alpha_pwl = 1. - (alpha_inv * torch.roll(alpha_inv, -1)) ** 0.5
+
+    # Now all the pose with len == sequence_len will be wrong.
+    # I will replace this with the original alpha (non-averaging one)
+    mask = ray_id != torch.roll(ray_id, -1)
+    alpha_pwl[mask] = alpha[mask]
+    return alpha_pwl
 
 
-def get_rays_np(H, W, K, c2w):
-    i, j = np.meshgrid(np.arange(W, dtype=np.float32), np.arange(H, dtype=np.float32), indexing='xy')
-    dirs = np.stack([(i-K[0][2])/K[0][0], -(j-K[1][2])/K[1][1], -np.ones_like(i)], -1)
-    # Rotate ray directions from camera frame to the world frame
-    rays_d = np.sum(dirs[..., np.newaxis, :] * c2w[:3,:3], -1)  # dot product, equals to: [c2w.dot(dir) for dir in dirs]
-    # Translate camera frame's origin to the world frame. It is the origin of all rays.
-    rays_o = np.broadcast_to(c2w[:3,3], np.shape(rays_d))
-    return rays_o, rays_d
+def alpha_grid_to_pwlalpha_grid(alpha_grid):
+    """Compute PWL alpha across the grid from alpha evaluation at the grid points.
 
+    Args:
+        [alpha_grid]
+        [voxel_size]
 
-def ndc_rays(H, W, focal, near, rays_o, rays_d):
-    # Shift ray origins to near plane
-    t = -(near + rays_o[...,2]) / rays_d[...,2]
-    rays_o = rays_o + t[...,None] * rays_d
-
-    # Projection
-    o0 = -1./(W/(2.*focal)) * rays_o[...,0] / rays_o[...,2]
-    o1 = -1./(H/(2.*focal)) * rays_o[...,1] / rays_o[...,2]
-    o2 = 1. + 2. * near / rays_o[...,2]
-
-    d0 = -1./(W/(2.*focal)) * (rays_d[...,0]/rays_d[...,2] - rays_o[...,0]/rays_o[...,2])
-    d1 = -1./(H/(2.*focal)) * (rays_d[...,1]/rays_d[...,2] - rays_o[...,1]/rays_o[...,2])
-    d2 = -2. * near / rays_o[...,2]
-
-    rays_o = torch.stack([o0,o1,o2], -1)
-    rays_d = torch.stack([d0,d1,d2], -1)
-
-    return rays_o, rays_d
-
-
-def get_rays_of_a_view(H, W, K, c2w, ndc, inverse_y, flip_x, flip_y, mode='center'):
-    rays_o, rays_d = get_rays(H, W, K, c2w, inverse_y=inverse_y, flip_x=flip_x, flip_y=flip_y, mode=mode)
-    viewdirs = rays_d / rays_d.norm(dim=-1, keepdim=True)
-    if ndc:
-        rays_o, rays_d = ndc_rays(H, W, K[0][0], 1., rays_o, rays_d)
-    return rays_o, rays_d, viewdirs
-
-
-@torch.no_grad()
-def get_training_rays(rgb_tr, train_poses, HW, Ks, ndc, inverse_y, flip_x, flip_y):
-    print('get_training_rays: start')
-    assert len(np.unique(HW, axis=0)) == 1
-    assert len(np.unique(Ks.reshape(len(Ks),-1), axis=0)) == 1
-    assert len(rgb_tr) == len(train_poses) and len(rgb_tr) == len(Ks) and len(rgb_tr) == len(HW)
-    H, W = HW[0]
-    K = Ks[0]
-    eps_time = time.time()
-    rays_o_tr = torch.zeros([len(rgb_tr), H, W, 3], device=rgb_tr.device)
-    rays_d_tr = torch.zeros([len(rgb_tr), H, W, 3], device=rgb_tr.device)
-    viewdirs_tr = torch.zeros([len(rgb_tr), H, W, 3], device=rgb_tr.device)
-    imsz = [1] * len(rgb_tr)
-    for i, c2w in enumerate(train_poses):
-        rays_o, rays_d, viewdirs = get_rays_of_a_view(
-                H=H, W=W, K=K, c2w=c2w, ndc=ndc, inverse_y=inverse_y, flip_x=flip_x, flip_y=flip_y)
-        rays_o_tr[i].copy_(rays_o.to(rgb_tr.device))
-        rays_d_tr[i].copy_(rays_d.to(rgb_tr.device))
-        viewdirs_tr[i].copy_(viewdirs.to(rgb_tr.device))
-        del rays_o, rays_d, viewdirs
-    eps_time = time.time() - eps_time
-    print('get_training_rays: finish (eps time:', eps_time, 'sec)')
-    return rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz
-
-
-@torch.no_grad()
-def get_training_rays_flatten(rgb_tr_ori, train_poses, HW, Ks, ndc, inverse_y, flip_x, flip_y):
-    print('get_training_rays_flatten: start')
-    assert len(rgb_tr_ori) == len(train_poses) and len(rgb_tr_ori) == len(Ks) and len(rgb_tr_ori) == len(HW)
-    eps_time = time.time()
-    DEVICE = rgb_tr_ori[0].device
-    N = sum(im.shape[0] * im.shape[1] for im in rgb_tr_ori)
-    rgb_tr = torch.zeros([N,3], device=DEVICE)
-    rays_o_tr = torch.zeros_like(rgb_tr)
-    rays_d_tr = torch.zeros_like(rgb_tr)
-    viewdirs_tr = torch.zeros_like(rgb_tr)
-    imsz = []
-    top = 0
-    for c2w, img, (H, W), K in zip(train_poses, rgb_tr_ori, HW, Ks):
-        assert img.shape[:2] == (H, W)
-        rays_o, rays_d, viewdirs = get_rays_of_a_view(
-                H=H, W=W, K=K, c2w=c2w, ndc=ndc,
-                inverse_y=inverse_y, flip_x=flip_x, flip_y=flip_y)
-        n = H * W
-        rgb_tr[top:top+n].copy_(img.flatten(0,1))
-        rays_o_tr[top:top+n].copy_(rays_o.flatten(0,1).to(DEVICE))
-        rays_d_tr[top:top+n].copy_(rays_d.flatten(0,1).to(DEVICE))
-        viewdirs_tr[top:top+n].copy_(viewdirs.flatten(0,1).to(DEVICE))
-        imsz.append(n)
-        top += n
-
-    assert top == N
-    eps_time = time.time() - eps_time
-    print('get_training_rays_flatten: finish (eps time:', eps_time, 'sec)')
-    return rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz
-
-
-@torch.no_grad()
-def get_training_rays_in_maskcache_sampling(rgb_tr_ori, train_poses, HW, Ks, ndc, inverse_y, flip_x, flip_y, model, render_kwargs):
-    print('get_training_rays_in_maskcache_sampling: start')
-    assert len(rgb_tr_ori) == len(train_poses) and len(rgb_tr_ori) == len(Ks) and len(rgb_tr_ori) == len(HW)
-    CHUNK = 64
-    DEVICE = rgb_tr_ori[0].device
-    eps_time = time.time()
-    N = sum(im.shape[0] * im.shape[1] for im in rgb_tr_ori)
-    rgb_tr = torch.zeros([N,3], device=DEVICE)
-    rays_o_tr = torch.zeros_like(rgb_tr)
-    rays_d_tr = torch.zeros_like(rgb_tr)
-    viewdirs_tr = torch.zeros_like(rgb_tr)
-    imsz = []
-    top = 0
-    for c2w, img, (H, W), K in zip(train_poses, rgb_tr_ori, HW, Ks):
-        assert img.shape[:2] == (H, W)
-        rays_o, rays_d, viewdirs = get_rays_of_a_view(
-                H=H, W=W, K=K, c2w=c2w, ndc=ndc,
-                inverse_y=inverse_y, flip_x=flip_x, flip_y=flip_y)
-        mask = torch.empty(img.shape[:2], device=DEVICE, dtype=torch.bool)
-        for i in range(0, img.shape[0], CHUNK):
-            mask[i:i+CHUNK] = model.hit_coarse_geo(
-                    rays_o=rays_o[i:i+CHUNK], rays_d=rays_d[i:i+CHUNK], **render_kwargs).to(DEVICE)
-        n = mask.sum()
-        rgb_tr[top:top+n].copy_(img[mask])
-        rays_o_tr[top:top+n].copy_(rays_o[mask].to(DEVICE))
-        rays_d_tr[top:top+n].copy_(rays_d[mask].to(DEVICE))
-        viewdirs_tr[top:top+n].copy_(viewdirs[mask].to(DEVICE))
-        imsz.append(n)
-        top += n
-
-    print('get_training_rays_in_maskcache_sampling: ratio', top / N)
-    rgb_tr = rgb_tr[:top]
-    rays_o_tr = rays_o_tr[:top]
-    rays_d_tr = rays_d_tr[:top]
-    viewdirs_tr = viewdirs_tr[:top]
-    eps_time = time.time() - eps_time
-    print('get_training_rays_in_maskcache_sampling: finish (eps time:', eps_time, 'sec)')
-    return rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz
-
-
-def batch_indices_generator(N, BS):
-    # torch.randperm on cuda produce incorrect results in my machine
-    idx, top = torch.LongTensor(np.random.permutation(N)), 0
-    while True:
-        if top + BS > N:
-            idx, top = torch.LongTensor(np.random.permutation(N)), 0
-        yield idx[top:top+BS]
-        top += BS
-
+    TODO:(gaunda). 
+        Right now we will approximating it via axies aligned rays.
+            alpha_i         = 1 - exp(- tau_i * delta)
+            log_inv_alpha_i = - tau_i * delta
+        We want to compute:
+            alpha_pwl       = 1 - exp(- N^{-1} (sum_{j=1}^N tau_j) * delta)
+                            = 1 - exp(AvgPooled(log_inv_alpha_i))
+    """
+    return alpha_grid
+    # inv_alpha = 1 - alpha_grid
+    # log_inv_alpha = torch.log(inv_alpha)
+    # log_inv_alpha_pooled = F.avg_pool3d(
+        # log_inv_alpha, kernel_size=1, padding=1, stride=1)[0,0]
+    # inv_alpha_pooled = torch.exp(log_inv_alpha_pooled)
+    # alpha_pooled = 1 - inv_alpha_pooled
+    # return alpha_pooled 

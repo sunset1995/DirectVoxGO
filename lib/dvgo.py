@@ -328,7 +328,6 @@ class DirectVoxGO(torch.nn.Module):
 
         # compute accumulated transmittance
         weights, alphainv_last = Alphas2Weights.apply(alpha, ray_id, N)
-        import pdb; pdb.set_trace()
         if self.fast_color_thres > 0:
             mask = (weights > self.fast_color_thres)
             weights = weights[mask]

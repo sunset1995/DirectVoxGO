@@ -1,6 +1,6 @@
 _base_ = '../default.py'
 
-expname = 'dvgo_pwl_lego'
+expname = 'dvgo_lego_fineonly_nocache'
 basedir = './logs/nerf_synthetic'
 
 data = dict(
@@ -11,13 +11,10 @@ data = dict(
 
 # No Coarse training
 coarse_train = {
-    "N_iters": 0, 
-    # "ray_sampler": "random"
+    "N_iters": 0,
     "disable_cache": True
 }
-model_class="dvgo_pwl"
 
 fine_train = {
     "disable_cache": True,
-    "pg_scale": [], # no scaling
 }

@@ -63,6 +63,7 @@ coarse_train = dict(
     decay_after_scale=1.0,        # decay act_shift after scaling
     skip_zero_grad_fields=[],     # the variable name to skip optimizing parameters w/ zero grad in each iteration
     maskout_lt_nviews=0,
+    disable_cache=True,
 )
 
 fine_train = deepcopy(coarse_train)
@@ -101,6 +102,7 @@ coarse_model_and_render = dict(
     maskout_near_cam_vox=True,    # maskout grid points that between cameras and their near planes
     world_bound_scale=1,          # rescale the BBox enclosing the scene
     stepsize=0.5,                 # sampling stepsize in volume rendering
+    disable_cache=False,
 )
 
 fine_model_and_render = deepcopy(coarse_model_and_render)

@@ -307,7 +307,9 @@ def load_existed_model(args, cfg, cfg_train, reload_ckpt_path):
     return model, optimizer, start
 
 
-def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, data_dict, stage, coarse_ckpt_path=None):
+def scene_rep_reconstruction(
+        args, cfg, cfg_model, cfg_train, 
+        xyz_min, xyz_max, data_dict, stage, coarse_ckpt_path=None):
     # init
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if abs(cfg_model.world_bound_scale - 1) > 1e-9:
@@ -410,7 +412,9 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
     for global_step in trange(1+start, 1+cfg_train.N_iters):
 
         # renew occupancy grid
-        if model.mask_cache is not None and (global_step + 500) % 1000 == 0:
+        if (model.mask_cache is not None and 
+            (global_step + 500) % 1000 == 0 and 
+            (not cfg_train.get("disable_cache", False))):
             model.update_occupancy_cache()
 
         # progress scaling checkpoint
@@ -725,7 +729,12 @@ if __name__=='__main__':
         imageio.mimwrite(os.path.join(testsavedir, 'video.rgb.mp4'), utils.to8b(rgbs), fps=30, quality=8)
         import matplotlib.pyplot as plt
         depths_vis = depths * (1-bgmaps) + bgmaps
-        dmin, dmax = np.percentile(depths_vis[bgmaps < 0.1], q=[5, 95])
+        import pdb; pdb.set_trace()
+        if depths_vis.max() == depths_vis.min(): # same color
+            dmin, dmax = depths_vis.min(), depths_vis.max()
+        else:
+            dmin, dmax = np.percentile(depths_vis[bgmaps < 0.1], q=[5, 95])
+
         depth_vis = plt.get_cmap('rainbow')(1 - np.clip((depths_vis - dmin) / (dmax - dmin), 0, 1)).squeeze()[..., :3]
         imageio.mimwrite(os.path.join(testsavedir, 'video.depth.mp4'), utils.to8b(depth_vis), fps=30, quality=8)
 
