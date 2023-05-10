@@ -407,7 +407,7 @@ class DirectVoxGO(torch.nn.Module):
         return ret_dict
 
 
-def alpha_to_pwlalpha(alpha, ray_id, interval):
+def alpha_to_pwlalpha(alpha, ray_id, interval, eps=1e-6):
     """
     Assuming the delta is fixed for now
         alpha_pwl_i = 1 - exp(- 0.5 * (tau_i + tau_{i+1}) * delta)
@@ -425,13 +425,18 @@ def alpha_to_pwlalpha(alpha, ray_id, interval):
         [alpha] new alpha with PWL formulation
     """
     alpha_inv = 1 - alpha
-    alpha_pwl = 1. - (alpha_inv * torch.roll(alpha_inv, -1)) ** 0.5
+    # alpha_pwl = 1. - (alpha_inv * torch.roll(alpha_inv, -1)) ** 0.5
+    alpha_pwl = 1. - (
+        torch.max(eps * torch.ones_like(alpha_inv), 
+                  alpha_inv * torch.roll(alpha_inv, -1))) ** 0.5
 
     # Now all the pose with len == sequence_len will be wrong.
     # I will replace this with the original alpha (non-averaging one)
     mask = ray_id != torch.roll(ray_id, -1)
     alpha_pwl[mask] = alpha[mask]
     return alpha_pwl
+
+    # TODO: avoid the square root (with log?)
 
 
 def alpha_grid_to_pwlalpha_grid(alpha_grid):

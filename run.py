@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.tensorboard import SummaryWriter
 
 from lib import utils, dvgo, dcvgo, dmpigo, dvgo_pwl
 from lib.load_data import load_data
@@ -309,7 +310,8 @@ def load_existed_model(args, cfg, cfg_train, reload_ckpt_path):
 
 def scene_rep_reconstruction(
         args, cfg, cfg_model, cfg_train, 
-        xyz_min, xyz_max, data_dict, stage, coarse_ckpt_path=None):
+        xyz_min, xyz_max, data_dict, stage, 
+        coarse_ckpt_path=None, writer=None):
     # init
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if abs(cfg_model.world_bound_scale - 1) > 1e-9:
@@ -464,33 +466,51 @@ def scene_rep_reconstruction(
 
         # gradient descent step
         optimizer.zero_grad(set_to_none=True)
-        loss = cfg_train.weight_main * F.mse_loss(render_result['rgb_marched'], target)
+        loss = 0
+        loss_rgb = cfg_train.weight_main * F.mse_loss(
+            render_result['rgb_marched'], target)
+        loss += loss_rgb
+
         psnr = utils.mse2psnr(loss.detach())
+
+        entropy_last_loss = 0.
         if cfg_train.weight_entropy_last > 0:
             pout = render_result['alphainv_last'].clamp(1e-6, 1-1e-6)
             entropy_last_loss = -(pout*torch.log(pout) + (1-pout)*torch.log(1-pout)).mean()
-            loss += cfg_train.weight_entropy_last * entropy_last_loss
+            entropy_last_loss = cfg_train.weight_entropy_last * entropy_last_loss
+        loss += entropy_last_loss
+
+        nearclip_loss = 0.
         if cfg_train.weight_nearclip > 0:
             near_thres = data_dict['near_clip'] / model.scene_radius[0].item()
             near_mask = (render_result['t'] < near_thres)
             density = render_result['raw_density'][near_mask]
             if len(density):
                 nearclip_loss = (density - density.detach()).sum()
-                loss += cfg_train.weight_nearclip * nearclip_loss
+                nearclip_loss = cfg_train.weight_nearclip * nearclip_loss
+        loss += nearclip_loss
+
+        loss_distortion = 0.
         if cfg_train.weight_distortion > 0:
             n_max = render_result['n_max']
             s = render_result['s']
             w = render_result['weights']
             ray_id = render_result['ray_id']
             loss_distortion = flatten_eff_distloss(w, s, 1/n_max, ray_id)
-            loss += cfg_train.weight_distortion * loss_distortion
+            loss_distortion = cfg_train.weight_distortion * loss_distortion
+        loss += loss_distortion
+
+        rgbper_loss = 0.
         if cfg_train.weight_rgbper > 0:
             rgbper = (render_result['raw_rgb'] - target[render_result['ray_id']]).pow(2).sum(-1)
             rgbper_loss = (rgbper * render_result['weights'].detach()).sum() / len(rays_o)
-            loss += cfg_train.weight_rgbper * rgbper_loss
+            rgbper_loss = cfg_train.weight_rgbper * rgbper_loss
+        loss += rgbper_loss
         loss.backward()
 
-        if global_step<cfg_train.tv_before and global_step>cfg_train.tv_after and global_step%cfg_train.tv_every==0:
+        if (global_step < cfg_train.tv_before and 
+            global_step > cfg_train.tv_after and 
+            global_step % cfg_train.tv_every == 0):
             if cfg_train.weight_tv_density>0:
                 model.density_total_variation_add_grad(
                     cfg_train.weight_tv_density/len(rays_o), global_step<cfg_train.tv_dense_before)
@@ -504,16 +524,45 @@ def scene_rep_reconstruction(
         # update lr
         decay_steps = cfg_train.lrate_decay * 1000
         decay_factor = 0.1 ** (1/decay_steps)
+        avg_lr, cnt = 0, 0
         for i_opt_g, param_group in enumerate(optimizer.param_groups):
             param_group['lr'] = param_group['lr'] * decay_factor
+            avg_lr += param_group['lr'] 
+            cnt += 1
+        avg_lr /= cnt
 
         # check log & save
         if global_step%args.i_print==0:
+            # COmpute gradient norm
+            with torch.no_grad():
+                total_norm = 0
+                for p in model.parameters():
+                    param_norm = p.grad.detach().data.norm(2)
+                    total_norm += param_norm.item() ** 2
+                total_norm = total_norm ** 0.5
             eps_time = time.time() - time0
             eps_time_str = f'{eps_time//3600:02.0f}:{eps_time//60%60:02.0f}:{eps_time%60:02.0f}'
             tqdm.write(f'scene_rep_reconstruction ({stage}): iter {global_step:6d} / '
                        f'Loss: {loss.item():.9f} / PSNR: {np.mean(psnr_lst):5.2f} / '
-                       f'Eps: {eps_time_str}')
+                       f'Eps: {eps_time_str} / '
+                       f'LR: {avg_lr}'
+                       )
+            writer.add_scalar("%s/loss" % stage, loss.item(), global_step)
+            writer.add_scalar("%s/psnr" % stage, np.mean(psnr_lst), global_step)
+            writer.add_scalar("%s/lr" % stage, avg_lr, global_step)
+            writer.add_scalar("%s/gnorm" % stage, total_norm, global_step)
+
+            for name_i, loss_i in [
+                ("rgb", loss_rgb),
+                ("entropy", entropy_last_loss),
+                ("nearclip", nearclip_loss),
+                ("distortion", loss_distortion),
+                ("rgbper", rgbper_loss),
+            ]:
+                writer.add_scalar(
+                    "%s/all_losses/%s" % (stage, name_i), 
+                    loss_i.item() if not isinstance(loss_i, float) else loss_i, 
+                    global_step)
             psnr_lst = []
 
         if global_step%args.i_weights==0:
@@ -548,6 +597,9 @@ def train(args, cfg, data_dict):
             file.write('{} = {}\n'.format(arg, attr))
     cfg.dump(os.path.join(cfg.basedir, cfg.expname, 'config.py'))
 
+    # Tensorboard writer
+    writer = SummaryWriter(log_dir=os.path.join(cfg.basedir, cfg.expname))
+
     # coarse geometry searching (only works for inward bounded scenes)
     eps_coarse = time.time()
     xyz_min_coarse, xyz_max_coarse = compute_bbox_by_cam_frustrm(args=args, cfg=cfg, **data_dict)
@@ -556,7 +608,7 @@ def train(args, cfg, data_dict):
                 args=args, cfg=cfg,
                 cfg_model=cfg.coarse_model_and_render, cfg_train=cfg.coarse_train,
                 xyz_min=xyz_min_coarse, xyz_max=xyz_max_coarse,
-                data_dict=data_dict, stage='coarse')
+                data_dict=data_dict, stage='coarse', writer=writer)
         eps_coarse = time.time() - eps_coarse
         eps_time_str = f'{eps_coarse//3600:02.0f}:{eps_coarse//60%60:02.0f}:{eps_coarse%60:02.0f}'
         print('train: coarse geometry searching in', eps_time_str)
@@ -580,7 +632,8 @@ def train(args, cfg, data_dict):
             cfg_model=cfg.fine_model_and_render, cfg_train=cfg.fine_train,
             xyz_min=xyz_min_fine, xyz_max=xyz_max_fine,
             data_dict=data_dict, stage='fine',
-            coarse_ckpt_path=coarse_ckpt_path)
+            coarse_ckpt_path=coarse_ckpt_path,
+            writer=writer)
     eps_fine = time.time() - eps_fine
     eps_time_str = f'{eps_fine//3600:02.0f}:{eps_fine//60%60:02.0f}:{eps_fine%60:02.0f}'
     print('train: fine detail reconstruction in', eps_time_str)
