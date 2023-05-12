@@ -436,8 +436,6 @@ def alpha_to_pwlalpha(alpha, ray_id, interval, eps=1e-6):
     alpha_pwl[mask] = alpha[mask]
     return alpha_pwl
 
-    # TODO: avoid the square root (with log?)
-
 
 def alpha_grid_to_pwlalpha_grid(alpha_grid):
     """Compute PWL alpha across the grid from alpha evaluation at the grid points.
