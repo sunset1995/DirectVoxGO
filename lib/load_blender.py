@@ -38,7 +38,10 @@ def load_blender_data(basedir, half_res=False, testskip=1):
     splits = ['train', 'val', 'test']
     metas = {}
     for s in splits:
-        with open(os.path.join(basedir, 'transforms_{}.json'.format(s)), 'r') as fp:
+        fname = os.path.join(basedir, 'transforms_{}.json'.format(s))
+        if not os.path.isfile(fname):
+            fname = os.path.join(basedir, '{}_transforms.json'.format(s))
+        with open(fname, 'r') as fp:
             metas[s] = json.load(fp)
 
     all_imgs = []

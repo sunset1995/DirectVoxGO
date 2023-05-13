@@ -782,7 +782,6 @@ if __name__=='__main__':
         imageio.mimwrite(os.path.join(testsavedir, 'video.rgb.mp4'), utils.to8b(rgbs), fps=30, quality=8)
         import matplotlib.pyplot as plt
         depths_vis = depths * (1-bgmaps) + bgmaps
-        import pdb; pdb.set_trace()
         if depths_vis.max() == depths_vis.min(): # same color
             dmin, dmax = depths_vis.min(), depths_vis.max()
         else:

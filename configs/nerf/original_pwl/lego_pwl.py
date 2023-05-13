@@ -4,7 +4,8 @@ _base_ = '../default.py'
 # expname = 'dvgo_pwl_lego'
 # expname = 'dvgo_pwl_lego_eps1e-6'
 # expname = 'dvgo_pwl_lego_eps1e-6_pgscale_cache_coarse'
-expname = 'dvgo_pwl_lego_eps1e-6_pgscale_cache_coarse_cache'
+# expname = 'dvgo_pwl_lego_eps1e-6_pgscale_cache_coarse_cache'
+expname = 'dvgo_lego_pwl'
 basedir = './logs/nerf_synthetic'
 
 data = dict(

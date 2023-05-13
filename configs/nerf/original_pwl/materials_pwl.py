@@ -1,6 +1,6 @@
 _base_ = '../default.py'
 
-expname = 'dvgo_materials'
+expname = 'dvgo_materials_pwl'
 basedir = './logs/nerf_synthetic'
 
 data = dict(
