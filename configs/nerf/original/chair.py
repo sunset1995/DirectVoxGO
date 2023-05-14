@@ -1,4 +1,4 @@
-_base_ = '../default.py'
+_base_ = '../../default.py'
 
 expname = 'dvgo_chair'
 basedir = './logs/nerf_synthetic'

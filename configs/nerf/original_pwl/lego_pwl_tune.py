@@ -1,15 +1,16 @@
 _base_ = '../../default.py'
 
-expname = 'dvgo_ship_pwl'
+expname = 'dvgo_lego_pwl'
 basedir = './logs/nerf_synthetic'
 
 data = dict(
-    datadir='./data/nerf_synthetic/ship',
+    datadir='./data/nerf_synthetic/lego',
     dataset_type='blender',
     white_bkgd=True,
 )
 
 model_class="dvgo_pwl"
+
 
 train_ratio = 2
 fine_train = dict(
